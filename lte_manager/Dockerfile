@@ -8,7 +8,10 @@ LABEL io.hass.version="${BUILD_VERSION}" \
       org.opencontainers.image.title="Baiamonte LTE" \
       org.opencontainers.image.source="https://github.com/drahamin/home-assistant-lte"
 
-RUN apk add --no-cache bash ccid iputils pcsc-lite-libs pcsc-lite pcsc-tools
+RUN apk add --no-cache bash ccid iputils pcsc-lite-libs pcsc-lite \
+      pcsc-lite-dev gcc musl-dev swig \
+    && pip install --no-cache-dir pyscard==2.2.2 \
+    && apk del pcsc-lite-dev gcc musl-dev swig
 WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt

@@ -257,16 +257,12 @@ def upload_commissioning():
 def sim_readers():
     tool = shutil.which("pySim-shell.py") or shutil.which("pySim-shell") or shutil.which("pySim-prog.py")
     detected = []
-    scanner = shutil.which("pcsc_scan")
-    if scanner:
-        try:
-            probe = subprocess.run([scanner, "-n"], capture_output=True, text=True, timeout=2, check=False)
-            for line in (probe.stdout + probe.stderr).splitlines():
-                match = re.match(r"\s*Reader \d+:\s*(.+)", line)
-                if match and match.group(1).strip() not in detected:
-                    detected.append(match.group(1).strip())
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+    try:
+        from smartcard.System import readers
+        detected = [str(reader) for reader in readers()]
+    except Exception:
+        # The PC/SC service may still be starting or no USB reader may be attached.
+        pass
     return jsonify({"enabled": bool(settings()["sim_programming_enabled"]), "pysim": bool(tool),
                     "usb_visible": Path("/dev/bus/usb").exists(), "readers": detected,
                     "ready": bool(tool and detected and settings()["sim_programming_enabled"])})
