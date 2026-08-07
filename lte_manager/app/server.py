@@ -2,6 +2,7 @@ import json
 import ipaddress
 import os
 import re
+import secrets
 import shutil
 import socket
 import sqlite3
@@ -35,6 +36,7 @@ def settings():
         "epc_type": "nextepc", "mongodb_uri": "mongodb://192.168.1.151:27017/nextepc",
         "apn": "internet", "mcc": "001", "mnc": "01", "tac": 1,
         "ue_subnet": "45.45.0.0/16", "epc_uplink_interface": "eth0",
+        "epc_routing_management_enabled": False, "epc_ssh_user": "root", "epc_ssh_port": 22,
         "sim_programming_enabled": False,
     }
     path = Path(os.getenv("OPTIONS_PATH", "/data/options.json"))
@@ -256,7 +258,362 @@ def internet_plan():
         f"Masquerade traffic from {subnet} out {interface} and allow established return traffic.",
         "Persist the forwarding and firewall rules using the EPC operating system's supported method.",
         "Attach a subscriber and open a public HTTPS site from that UE for the final end-to-end test."
-    ], "note": "Apply routing on the EPC host. The Home Assistant app does not modify the EPC firewall automatically."})
+    ], "note": "Routing changes are applied only when EPC routing management is enabled and you explicitly confirm the guarded SSH operation."})
+
+
+EPC_SSH_KEY = CONFIG_DIR / "epc-routing-key"
+EPC_KNOWN_HOSTS = CONFIG_DIR / "epc-known-hosts"
+
+
+def routing_config():
+    cfg = settings()
+    try:
+        subnet = str(ipaddress.ip_network(str(cfg.get("ue_subnet", "")), strict=False))
+    except ValueError as exc:
+        raise ValueError("The configured UE subnet is invalid") from exc
+    interface = str(cfg.get("epc_uplink_interface", "")).strip()
+    user = str(cfg.get("epc_ssh_user", "")).strip()
+    host = str(cfg.get("epc_host", "")).strip()
+    port = int(cfg.get("epc_ssh_port", 22))
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", host):
+        raise ValueError("The EPC host is invalid")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,32}", user):
+        raise ValueError("The EPC SSH user is invalid")
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,20}", interface):
+        raise ValueError("The EPC uplink interface is invalid")
+    if not 1 <= port <= 65535:
+        raise ValueError("The EPC SSH port is invalid")
+    return {"enabled": bool(cfg.get("epc_routing_management_enabled")), "host": host, "port": port,
+            "user": user, "subnet": subnet, "interface": interface, "apn": str(cfg.get("apn", "internet"))}
+
+
+def require_routing_enabled():
+    cfg = routing_config()
+    if not cfg["enabled"]:
+        raise ValueError("Enable EPC routing management in the Home Assistant app configuration first")
+    return cfg
+
+
+def scan_epc_host():
+    cfg = require_routing_enabled()
+    result = subprocess.run(["ssh-keyscan", "-T", "5", "-p", str(cfg["port"]), cfg["host"]],
+                            capture_output=True, text=True, timeout=8, check=False)
+    key_lines = [line.strip() for line in result.stdout.splitlines() if line and not line.startswith("#")]
+    fingerprints = []
+    for line in key_lines:
+        fingerprint = subprocess.run(["ssh-keygen", "-lf", "-", "-E", "sha256"], input=line + "\n",
+                                     capture_output=True, text=True, timeout=3, check=False)
+        if fingerprint.returncode == 0:
+            parts = fingerprint.stdout.strip().split()
+            if len(parts) >= 4:
+                fingerprints.append({"fingerprint": parts[1], "type": parts[-1].strip("()"), "key_line": line})
+    if not fingerprints:
+        raise ValueError("No SSH host key was returned by the EPC")
+    return cfg, fingerprints
+
+
+def ssh_command(cfg):
+    if not EPC_SSH_KEY.exists():
+        raise ValueError("Upload an EPC SSH private key first")
+    if not EPC_KNOWN_HOSTS.exists():
+        raise ValueError("Verify and trust the EPC host fingerprint first")
+    return ["ssh", "-i", str(EPC_SSH_KEY), "-p", str(cfg["port"]), "-o", "BatchMode=yes",
+            "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes", "-o",
+            f"UserKnownHostsFile={EPC_KNOWN_HOSTS}", "-o", "ConnectTimeout=6",
+            f"{cfg['user']}@{cfg['host']}",
+            "if [ \"$(id -u)\" -eq 0 ]; then exec sh -s; else exec sudo -n sh -s; fi"]
+
+
+def run_epc_script(script, timeout=25):
+    cfg = require_routing_enabled()
+    result = subprocess.run(ssh_command(cfg), input=script, capture_output=True, text=True,
+                            timeout=timeout, check=False)
+    if result.returncode != 0:
+        message = (result.stderr or result.stdout or "Remote command failed").strip().splitlines()[-1][:600]
+        raise ValueError(f"EPC SSH operation failed: {message}")
+    return cfg, result.stdout.strip()
+
+
+def routing_check():
+    cfg = require_routing_enabled()
+    script = f"""set -eu
+SUBNET='{cfg['subnet']}'
+UPLINK='{cfg['interface']}'
+forwarding=$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo 0)
+if ip link show dev "$UPLINK" >/dev/null 2>&1; then interface_ok=1; else interface_ok=0; fi
+if ip route get 1.1.1.1 >/dev/null 2>&1; then route_ok=1; else route_ok=0; fi
+if iptables -w 5 -t nat -C POSTROUTING -s "$SUBNET" -o "$UPLINK" -j MASQUERADE >/dev/null 2>&1; then nat_ok=1; else nat_ok=0; fi
+if iptables -w 5 -C FORWARD -s "$SUBNET" -o "$UPLINK" -j ACCEPT >/dev/null 2>&1; then outbound_ok=1; else outbound_ok=0; fi
+if iptables -w 5 -C FORWARD -d "$SUBNET" -i "$UPLINK" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT >/dev/null 2>&1; then return_ok=1; else return_ok=0; fi
+if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet baiamonte-lte-routing.service; then service_ok=1; else service_ok=0; fi
+nat_packets=$(iptables -w 5 -t nat -nvxL POSTROUTING 2>/dev/null | awk -v s="$SUBNET" -v o="$UPLINK" '$3=="MASQUERADE" && $7==o && $8==s {{n+=$1}} END {{print n+0}}')
+outbound_packets=$(iptables -w 5 -nvxL FORWARD 2>/dev/null | awk -v s="$SUBNET" -v o="$UPLINK" '$3=="ACCEPT" && $7==o && $8==s {{n+=$1}} END {{print n+0}}')
+return_packets=$(iptables -w 5 -nvxL FORWARD 2>/dev/null | awk -v s="$SUBNET" -v i="$UPLINK" '$3=="ACCEPT" && $6==i && $9==s {{n+=$1}} END {{print n+0}}')
+printf 'forwarding=%s\ninterface=%s\nroute=%s\nnat=%s\noutbound=%s\nreturn=%s\nservice=%s\nnat_packets=%s\noutbound_packets=%s\nreturn_packets=%s\nos=%s\n' "$forwarding" "$interface_ok" "$route_ok" "$nat_ok" "$outbound_ok" "$return_ok" "$service_ok" "$nat_packets" "$outbound_packets" "$return_packets" "$(uname -sr)"
+"""
+    _, output = run_epc_script(script)
+    values = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
+    checks = {key: values.get(key) == "1" for key in ("forwarding", "interface", "route", "nat", "outbound", "return", "service")}
+    counters = {key: int(values.get(f"{key}_packets", 0)) for key in ("nat", "outbound", "return")}
+    result = {"checks": checks, "counters": counters, "ready": all(checks.values()), "os": values.get("os", "Unknown"),
+              "host": cfg["host"], "subnet": cfg["subnet"], "interface": cfg["interface"], "checked_at": int(time.time())}
+    with db() as conn:
+        conn.execute("INSERT OR REPLACE INTO app_settings(key,value) VALUES('routing_last_status',?)", (json.dumps(result),))
+    return result
+
+
+def routing_apply_script(cfg):
+    return f"""set -eu
+SUBNET='{cfg['subnet']}'
+UPLINK='{cfg['interface']}'
+command -v iptables >/dev/null 2>&1 || {{ echo 'iptables is required on the EPC' >&2; exit 12; }}
+command -v systemctl >/dev/null 2>&1 || {{ echo 'systemd is required on the EPC' >&2; exit 13; }}
+ip link show dev "$UPLINK" >/dev/null 2>&1 || {{ echo 'configured uplink interface does not exist' >&2; exit 14; }}
+for path in /usr/local/sbin/baiamonte-lte-routing /etc/systemd/system/baiamonte-lte-routing.service /etc/sysctl.d/99-baiamonte-lte.conf; do
+  if [ -e "$path" ] && ! grep -q 'Managed by Baiamonte LTE' "$path"; then echo "Refusing to replace unmanaged file: $path" >&2; exit 15; fi
+done
+install -d -m 0700 /var/lib/baiamonte-lte-routing
+if [ ! -f /var/lib/baiamonte-lte-routing/previous_forwarding ]; then sysctl -n net.ipv4.ip_forward > /var/lib/baiamonte-lte-routing/previous_forwarding; fi
+cat > /usr/local/sbin/baiamonte-lte-routing <<'ROUTING'
+#!/bin/sh
+# Managed by Baiamonte LTE
+set -eu
+SUBNET='{cfg['subnet']}'
+UPLINK='{cfg['interface']}'
+sysctl -w net.ipv4.ip_forward=1 >/dev/null
+iptables -w 5 -t nat -C POSTROUTING -s "$SUBNET" -o "$UPLINK" -j MASQUERADE 2>/dev/null || iptables -w 5 -t nat -A POSTROUTING -s "$SUBNET" -o "$UPLINK" -j MASQUERADE
+iptables -w 5 -C FORWARD -s "$SUBNET" -o "$UPLINK" -j ACCEPT 2>/dev/null || iptables -w 5 -I FORWARD 1 -s "$SUBNET" -o "$UPLINK" -j ACCEPT
+iptables -w 5 -C FORWARD -d "$SUBNET" -i "$UPLINK" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || iptables -w 5 -I FORWARD 1 -d "$SUBNET" -i "$UPLINK" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+ROUTING
+chmod 0755 /usr/local/sbin/baiamonte-lte-routing
+cat > /etc/sysctl.d/99-baiamonte-lte.conf <<'SYSCTL'
+# Managed by Baiamonte LTE
+net.ipv4.ip_forward=1
+SYSCTL
+cat > /etc/systemd/system/baiamonte-lte-routing.service <<'UNIT'
+# Managed by Baiamonte LTE
+[Unit]
+Description=Baiamonte LTE subscriber Internet routing
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/baiamonte-lte-routing
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now baiamonte-lte-routing.service >/dev/null
+echo applied
+"""
+
+
+def routing_rollback_script(cfg):
+    return f"""set -eu
+SUBNET='{cfg['subnet']}'
+UPLINK='{cfg['interface']}'
+while iptables -w 5 -t nat -C POSTROUTING -s "$SUBNET" -o "$UPLINK" -j MASQUERADE 2>/dev/null; do iptables -w 5 -t nat -D POSTROUTING -s "$SUBNET" -o "$UPLINK" -j MASQUERADE; done
+while iptables -w 5 -C FORWARD -s "$SUBNET" -o "$UPLINK" -j ACCEPT 2>/dev/null; do iptables -w 5 -D FORWARD -s "$SUBNET" -o "$UPLINK" -j ACCEPT; done
+while iptables -w 5 -C FORWARD -d "$SUBNET" -i "$UPLINK" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null; do iptables -w 5 -D FORWARD -d "$SUBNET" -i "$UPLINK" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT; done
+if command -v systemctl >/dev/null 2>&1; then systemctl disable --now baiamonte-lte-routing.service >/dev/null 2>&1 || true; fi
+rm -f /usr/local/sbin/baiamonte-lte-routing /etc/systemd/system/baiamonte-lte-routing.service /etc/sysctl.d/99-baiamonte-lte.conf
+if [ -f /var/lib/baiamonte-lte-routing/previous_forwarding ]; then previous=$(cat /var/lib/baiamonte-lte-routing/previous_forwarding); sysctl -w net.ipv4.ip_forward="$previous" >/dev/null; fi
+rm -rf /var/lib/baiamonte-lte-routing
+if command -v systemctl >/dev/null 2>&1; then systemctl daemon-reload; fi
+echo rolled_back
+"""
+
+
+@app.get("/api/epc-routing/status")
+def epc_routing_status():
+    try:
+        cfg = routing_config()
+        return jsonify({"config": cfg, "key_present": EPC_SSH_KEY.exists(), "host_trusted": EPC_KNOWN_HOSTS.exists()})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/epc-routing/key")
+def epc_routing_key():
+    try:
+        require_routing_enabled()
+        upload = request.files.get("file")
+        if not upload or not upload.filename:
+            raise ValueError("Choose an unencrypted SSH private key")
+        raw = upload.stream.read(65_537)
+        if len(raw) > 65_536:
+            raise ValueError("SSH key must be 64 KB or smaller")
+        fd, temp_path = tempfile.mkstemp(prefix="epc-key-", dir=CONFIG_DIR)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(raw)
+            os.chmod(temp_path, 0o600)
+            result = subprocess.run(["ssh-keygen", "-y", "-P", "", "-f", temp_path], capture_output=True,
+                                    timeout=5, check=False)
+            if result.returncode != 0:
+                raise ValueError("Use a valid, unencrypted OpenSSH private key")
+            os.replace(temp_path, EPC_SSH_KEY)
+            os.chmod(EPC_SSH_KEY, 0o600)
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+        event("routing", "Stored EPC SSH key privately")
+        return jsonify({"ok": True})
+    except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+def epc_public_key():
+    if not EPC_SSH_KEY.exists():
+        raise ValueError("Generate or upload an EPC SSH private key first")
+    result = subprocess.run(["ssh-keygen", "-y", "-P", "", "-f", str(EPC_SSH_KEY)], capture_output=True,
+                            text=True, timeout=5, check=False)
+    if result.returncode != 0 or not result.stdout.strip():
+        raise ValueError("The stored EPC key could not be read")
+    return result.stdout.strip() + " baiamonte-lte"
+
+
+@app.route("/api/epc-routing/key/generate", methods=["POST", "GET"])
+def epc_routing_generate_key():
+    try:
+        require_routing_enabled()
+        if request.method == "GET":
+            return jsonify({"public_key": epc_public_key()})
+        body = request.get_json(silent=True) or {}
+        if EPC_SSH_KEY.exists() and body.get("confirm") != "REPLACE KEY":
+            raise ValueError("A key already exists; confirmation must be REPLACE KEY")
+        temp_base = CONFIG_DIR / f"epc-generated-{secrets.token_hex(6)}"
+        result = subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "baiamonte-lte",
+                                 "-f", str(temp_base)], capture_output=True, text=True, timeout=8, check=False)
+        if result.returncode != 0:
+            raise ValueError("Could not generate the dedicated EPC key")
+        os.replace(temp_base, EPC_SSH_KEY)
+        os.chmod(EPC_SSH_KEY, 0o600)
+        public_path = Path(str(temp_base) + ".pub")
+        if public_path.exists():
+            public_path.unlink()
+        event("routing", "Generated a dedicated EPC SSH key")
+        return jsonify({"ok": True, "public_key": epc_public_key()})
+    except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/epc-routing/scan")
+def epc_routing_scan():
+    try:
+        cfg, fingerprints = scan_epc_host()
+        return jsonify({"host": cfg["host"], "port": cfg["port"],
+                        "fingerprints": [{"fingerprint": item["fingerprint"], "type": item["type"]} for item in fingerprints]})
+    except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/epc-routing/trust")
+def epc_routing_trust():
+    try:
+        wanted = str((request.get_json(silent=True) or {}).get("fingerprint", ""))
+        cfg, fingerprints = scan_epc_host()
+        match = next((item for item in fingerprints if item["fingerprint"] == wanted), None)
+        if not match:
+            raise ValueError("The EPC fingerprint changed; scan it again before trusting")
+        EPC_KNOWN_HOSTS.write_text(match["key_line"] + "\n", encoding="utf-8")
+        os.chmod(EPC_KNOWN_HOSTS, 0o600)
+        event("routing", f"Trusted EPC SSH host key {wanted}")
+        return jsonify({"ok": True, "fingerprint": wanted})
+    except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.get("/api/epc-routing/preview")
+def epc_routing_preview():
+    try:
+        cfg = require_routing_enabled()
+        return jsonify({"host": cfg["host"], "user": cfg["user"], "port": cfg["port"],
+            "changes": ["Enable IPv4 forwarding using /etc/sysctl.d/99-baiamonte-lte.conf",
+                        f"Masquerade {cfg['subnet']} out {cfg['interface']}",
+                        "Allow subscriber outbound traffic and established return traffic",
+                        "Create and enable baiamonte-lte-routing.service for persistence"],
+            "rollback": "Removes only the Baiamonte service, sysctl file, and exact firewall rules; restores the previous forwarding value."})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/epc-routing/check")
+def epc_routing_check_api():
+    try:
+        return jsonify(routing_check())
+    except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/epc-routing/apply")
+def epc_routing_apply():
+    try:
+        cfg = require_routing_enabled()
+        if str((request.get_json(silent=True) or {}).get("confirm", "")) != f"APPLY {cfg['host']}":
+            raise ValueError(f"Confirmation must be APPLY {cfg['host']}")
+        run_epc_script(routing_apply_script(cfg), timeout=35)
+        result = routing_check()
+        event("routing", f"Applied subscriber Internet routing on EPC {cfg['host']}")
+        return jsonify({"ok": True, "status": result})
+    except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/epc-routing/rollback")
+def epc_routing_rollback():
+    try:
+        cfg = require_routing_enabled()
+        if str((request.get_json(silent=True) or {}).get("confirm", "")) != f"ROLLBACK {cfg['host']}":
+            raise ValueError(f"Confirmation must be ROLLBACK {cfg['host']}")
+        run_epc_script(routing_rollback_script(cfg), timeout=30)
+        event("routing", f"Rolled back Baiamonte routing on EPC {cfg['host']}")
+        return jsonify({"ok": True})
+    except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/epc-routing/verify/start")
+def epc_routing_verify_start():
+    try:
+        status = routing_check()
+        with db() as conn:
+            conn.execute("INSERT OR REPLACE INTO app_settings(key,value) VALUES('routing_verify_baseline',?)",
+                         (json.dumps({"created_at": int(time.time()), "counters": status["counters"]}),))
+        return jsonify({"ok": True, "baseline": status["counters"],
+                        "instruction": "On an attached LTE device, turn off Wi-Fi and open a new public HTTPS website, then return here."})
+    except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/epc-routing/verify/finish")
+def epc_routing_verify_finish():
+    try:
+        with db() as conn:
+            row = conn.execute("SELECT value FROM app_settings WHERE key='routing_verify_baseline'").fetchone()
+        if not row:
+            raise ValueError("Start the UE traffic test first")
+        baseline = json.loads(row["value"])
+        if int(time.time()) - baseline["created_at"] > 600:
+            raise ValueError("The UE traffic test expired; start a new one")
+        status = routing_check()
+        delta = {key: max(0, status["counters"][key] - int(baseline["counters"].get(key, 0)))
+                 for key in ("nat", "outbound", "return")}
+        verified = delta["nat"] > 0 and delta["outbound"] > 0 and delta["return"] > 0
+        partial = not verified and delta["nat"] > 0 and delta["outbound"] > 0
+        with db() as conn:
+            conn.execute("INSERT OR REPLACE INTO app_settings(key,value) VALUES('routing_last_verified',?)",
+                         (json.dumps({"verified": verified, "checked_at": int(time.time())}),))
+        event("routing", "UE Internet traffic test " + ("passed" if verified else "needs attention"))
+        return jsonify({"verified": verified, "partial": partial, "delta": delta, "status": status,
+                        "message": "Subscriber traffic crossed the EPC and return packets were observed." if verified else
+                                   "Outbound subscriber traffic was seen, but no return traffic was observed." if partial else
+                                   "No new subscriber traffic crossed the configured routing rules."})
+    except (ValueError, OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+        return jsonify({"error": str(exc)}), 400
 
 
 def analyze_core_log(text):
@@ -275,6 +632,21 @@ def analyze_core_log(text):
         if count:
             findings.append({"title": title, "count": count, "action": action})
     return findings
+
+
+def calculate_opc(k, op):
+    k, op = str(k).strip().upper(), str(op).strip().upper()
+    for name, value in (("K", k), ("OP", op)):
+        if len(value) != 32 or not HEX_RE.fullmatch(value):
+            raise ValueError(f"{name} must be 32 hexadecimal characters")
+    try:
+        result = subprocess.run(["openssl", "enc", "-aes-128-ecb", "-K", k, "-nopad", "-nosalt"],
+                                input=bytes.fromhex(op), capture_output=True, timeout=5, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValueError("The AES utility is unavailable") from exc
+    if result.returncode != 0 or len(result.stdout) != 16:
+        raise ValueError("OPc calculation failed")
+    return bytes(a ^ b for a, b in zip(result.stdout, bytes.fromhex(op))).hex().upper()
 
 
 def validate_subscriber(body):
@@ -337,8 +709,19 @@ def overview():
     with db() as conn:
         ue_count = conn.execute("SELECT COUNT(*) FROM subscribers").fetchone()[0]
         events = [dict(row) for row in conn.execute("SELECT * FROM events ORDER BY id DESC LIMIT 8")]
+        route_row = conn.execute("SELECT value FROM app_settings WHERE key='routing_last_status'").fetchone()
+        verified_row = conn.execute("SELECT value FROM app_settings WHERE key='routing_last_verified'").fetchone()
+    routing = {"configured": None, "verified": None}
+    try:
+        if route_row:
+            routing["configured"] = bool(json.loads(route_row["value"]).get("ready"))
+        if verified_row:
+            routing["verified"] = bool(json.loads(verified_row["value"]).get("verified"))
+    except (json.JSONDecodeError, TypeError):
+        pass
     return jsonify({"epc": status["epc"], "bts": status["bts"],
-                    "subscriber_count": ue_count, "events": events, "config": {k: v for k, v in cfg.items() if k != "mongodb_uri"}})
+                    "routing": routing, "subscriber_count": ue_count, "events": events,
+                    "config": {k: v for k, v in cfg.items() if k != "mongodb_uri"}})
 
 
 @app.get("/api/subscribers")
@@ -448,6 +831,23 @@ def sim_readers():
     return jsonify({"enabled": bool(settings()["sim_programming_enabled"]), "pysim": bool(tool),
                     "usb_visible": Path("/dev/bus/usb").exists(), "readers": detected,
                     "ready": bool(tool and detected and settings()["sim_programming_enabled"])})
+
+
+@app.post("/api/sim/opc")
+def sim_opc():
+    try:
+        body = request.get_json(silent=True) or {}
+        return jsonify({"opc": calculate_opc(body.get("k", ""), body.get("op", "")),
+                        "stored": False, "algorithm": "3GPP Milenage"})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/sim/test-values")
+def sim_test_values():
+    k, op = secrets.token_hex(16).upper(), secrets.token_hex(16).upper()
+    return jsonify({"k": k, "op": op, "opc": calculate_opc(k, op), "stored": False,
+                    "warning": "Use only with a programmable test SIM you own."})
 
 
 @app.get("/api/logs")

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0
+
+- Added a guarded EPC Routing Assistant with SSH host-key verification, preview, apply, status checks, and rollback.
+- Added a live subscriber traffic test using NAT, outbound, and established-return packet counters.
+- Added EPC, S1, Nokia radio, and verified UE Internet status lights to Overview.
+- Added a standards-correct Milenage OPc calculator and secure test-value generator to the SIM workbench.
+- Improved repeated page headings with clearer task-oriented section titles.
+
 ## 0.3.0
 
 - Added editable vineyard-zone grouping and filtering for estate devices.
