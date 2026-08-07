@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1
+
+- Fixed EPC private-key uploads for standard extensionless filenames such as `id_ed25519`.
+- Added persistent, specific guidance for public, encrypted, empty, and invalid SSH key files.
+- Added a clear one-click “Generate & store private key” workflow; only its public key is displayed.
+
 ## 0.4.0
 
 - Added a guarded EPC Routing Assistant with SSH host-key verification, preview, apply, status checks, and rollback.
