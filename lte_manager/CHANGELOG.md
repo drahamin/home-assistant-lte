@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0
+
+- Added editable vineyard-zone grouping and filtering for estate devices.
+- Added 6-hour, 24-hour, and 7-day EPC/radio connection-history charts.
+- Added configurable Home Assistant alerts for repeated EPC or radio failures, with cooldowns and recovery notices.
+- Added a lightweight background monitor that retains 30 days of availability samples.
+
 ## 0.2.0
 
 - Reworked the dashboard as a vineyard-operations console with estate-focused language and branding.

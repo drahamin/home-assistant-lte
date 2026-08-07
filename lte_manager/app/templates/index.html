@@ -20,6 +20,9 @@
     <symbol id="i-leaf" viewBox="0 0 24 24"><path d="M20 4C11 4 5 8.7 5 15c0 2.8 2.2 5 5 5 6.3 0 10-7 10-16Z"/><path d="M4 21c2.8-5.2 7-8.5 12.5-11"/></symbol>
     <symbol id="i-route" viewBox="0 0 24 24"><circle cx="5" cy="18" r="2"/><circle cx="19" cy="6" r="2"/><path d="M7 18h3a3 3 0 0 0 3-3V9a3 3 0 0 1 3-3h1"/></symbol>
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 19V5M4 19h16"/><path d="m7 15 4-4 3 2 5-7"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></symbol>
+    <symbol id="i-zone" viewBox="0 0 24 24"><path d="M12 21s7-5.4 7-12A7 7 0 1 0 5 9c0 6.6 7 12 7 12Z"/><circle cx="12" cy="9" r="2"/></symbol>
   </defs></svg>
   <div class="shell">
     <aside>
@@ -34,7 +37,7 @@
       <div class="lab-note"><span class="pulse"></span><div><b>Estate network</b><small>{{ config.mcc }}-{{ config.mnc }} · TAC {{ config.tac }}</small></div></div>
     </aside>
     <main>
-      <header><div><p class="eyebrow">TENUTA BAIAMONTE · PRIVATE ESTATE NETWORK</p><h1 id="page-title">Vineyard network</h1></div><div class="header-tools"><span class="last-check" id="last-checked">Not checked yet</span><button class="refresh" id="refresh"><svg><use href="#i-refresh"></use></svg><span>Refresh</span></button></div></header>
+      <header><div><p class="eyebrow">TENUTA BAIAMONTE · PRIVATE ESTATE NETWORK</p><h1 id="page-title">Vineyard network</h1></div><div class="header-tools"><span class="last-check" id="last-checked">Not checked yet</span><button class="refresh" id="refresh" aria-label="Refresh network status"><svg><use href="#i-refresh"></use></svg><span>Refresh</span></button></div></header>
 
       <section class="page active" id="overview">
         <div class="hero vineyard-hero">
@@ -58,12 +61,17 @@
           <article class="status-card"><div class="card-top"><span class="icon violet"><svg><use href="#i-tower"></use></svg></span><span class="badge" id="bts-badge">Checking</span></div><p>ESTATE RADIO · NOKIA</p><h3>{{ config.bts_host }}</h3><div class="metric"><span>Radio software</span><b>FLF21</b></div><div class="metric"><span>Core destination</span><b>{{ config.epc_host }}</b></div></article>
           <article class="status-card"><div class="card-top"><span class="icon amber"><svg><use href="#i-phone"></use></svg></span><span class="badge neutral">Trusted list</span></div><p>ESTATE DEVICES · UEs</p><h3><span id="ue-count">—</span> devices</h3><div class="metric"><span>Estate APN</span><b>{{ config.apn }}</b></div><button class="text-button" data-go="ues">Manage estate devices →</button></article>
         </div>
+        <div class="insights-grid">
+          <article class="panel history-panel"><div class="panel-title"><div><p>CONNECTION HISTORY</p><h3>Estate availability</h3></div><div class="range-picker" role="group" aria-label="History range"><button data-hours="6">6h</button><button data-hours="24" class="active">24h</button><button data-hours="168">7d</button></div></div><div class="uptime-row"><div><span class="legend epc"></span><small>EPC uptime</small><b id="epc-uptime">—</b></div><div><span class="legend radio"></span><small>Radio uptime</small><b id="radio-uptime">—</b></div><span id="history-samples" class="muted">Loading history…</span></div><div id="history-chart" class="history-chart" aria-label="EPC and radio connection history"></div></article>
+          <article class="panel alerts-panel"><div class="panel-title"><div><p>ESTATE ALERTS</p><h3>Offline notifications</h3></div><span class="route-icon"><svg><use href="#i-bell"></use></svg></span></div><p class="muted alert-intro">Receive a Home Assistant notification only after repeated checks fail.</p><form id="alert-form"><label class="switch-row"><span><b>EPC offline</b><small>Core at {{ config.epc_host }}</small></span><input type="checkbox" name="epc_enabled"><i></i></label><label class="switch-row"><span><b>Radio offline</b><small>Nokia site at {{ config.bts_host }}</small></span><input type="checkbox" name="radio_enabled"><i></i></label><div class="alert-numbers"><label><span>Alert after</span><select name="failure_threshold"><option value="2">2 failed checks</option><option value="3">3 failed checks</option><option value="5">5 failed checks</option><option value="10">10 failed checks</option></select></label><label><span>Repeat no sooner than</span><select name="cooldown_minutes"><option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60">1 hour</option><option value="240">4 hours</option><option value="1440">24 hours</option></select></label></div><button class="primary full" type="submit">Save alert rules</button><div id="alert-readiness" class="alert-readiness"></div></form></article>
+        </div>
         <div class="grid-two"><article class="panel"><div class="panel-title"><div><p>ESTATE SIGNAL ROUTE</p><h3>Field device to private core</h3></div><span class="route-icon"><svg><use href="#i-route"></use></svg></span></div><div class="topology"><div class="node"><span>Device</span><small>Estate SIM</small></div><div class="line"><i></i><small>Radio</small></div><div class="node tower"><span>eNB</span><small>.100</small></div><div class="line"><i></i><small>S1</small></div><div class="node"><span>EPC</span><small>.151</small></div></div></article><article class="panel"><div class="panel-title"><div><p>OPERATIONS JOURNAL</p><h3>Recent estate activity</h3></div></div><div id="events" class="events"><div class="empty">No events yet</div></div></article></div>
       </section>
 
       <section class="page" id="ues">
         <div class="section-head"><div><p>TRUSTED DEVICE REGISTRY</p><h2>Estate devices</h2><span>Provision phones, sensors, and field equipment on the private network.</span></div><button class="primary" id="add-ue">+ Add device</button></div>
-        <article class="panel table-panel"><table><thead><tr><th>Name</th><th>IMSI</th><th>APN</th><th>MSISDN</th><th></th></tr></thead><tbody id="ue-rows"></tbody></table><div id="ue-empty" class="empty large">No UEs provisioned yet.</div></article>
+        <div id="zone-summary" class="zone-summary" aria-label="Device zones"></div>
+        <article class="panel table-panel"><table><thead><tr><th>Name</th><th>Vineyard zone</th><th>IMSI</th><th>APN</th><th>MSISDN</th><th></th></tr></thead><tbody id="ue-rows"></tbody></table><div id="ue-empty" class="empty large">No estate devices provisioned yet.</div></article>
       </section>
 
       <section class="page" id="bts">
@@ -79,6 +87,7 @@
 
       <section class="page" id="diagnostics">
         <div class="section-head"><div><p>OBSERVABILITY & RECOVERY</p><h2>Network care</h2><span>Run safe checks, inspect estate activity, and analyze core logs.</span></div><div class="button-row"><a class="secondary link-button" href="api/support-bundle">Download support bundle</a><button class="primary" id="run-diagnostics">Run diagnostics</button></div></div>
+        <article class="panel breakout-panel"><div class="panel-title"><div><p>SUBSCRIBER INTERNET</p><h3>UE Internet breakout</h3></div><span class="route-icon"><svg><use href="#i-route"></use></svg></span></div><div class="breakout-route"><span>Estate UE</span><i>APN {{ config.apn }}</i><span>PGW / {{ config.ue_subnet }}</span><i>NAT via {{ config.epc_uplink_interface }}</i><span>Open Internet</span></div><div id="internet-plan" class="breakout-steps"><div class="empty">Loading EPC routing checklist…</div></div></article>
         <div class="grid-two diagnostics-grid"><article class="panel"><div class="panel-title"><div><p>ONE-CLICK CHECKS</p><h3>Network and configuration</h3></div><span class="badge neutral" id="diagnostic-summary">Not run</span></div><div id="diagnostic-results" class="diagnostic-results"><div class="empty">Run diagnostics to test the current path.</div></div></article><article class="panel"><p>EPC LOG ANALYZER</p><h3>NextEPC / Open5GS</h3><p class="muted">Upload a copied MME, SGW, or PGW log. Analysis happens inside the app and the file is not retained.</p><form id="log-analyze-form"><label class="drop"><input type="file" name="file" accept=".log,.txt"><b>Choose a core log</b><span>Maximum 2 MB</span></label><button class="secondary full">Analyze log</button></form><div id="log-findings"></div></article></div>
         <article class="panel log-panel"><div class="panel-title"><div><p>LIVE APP LOG</p><h3>Baiamonte LTE activity</h3></div><div class="button-row"><label class="follow"><input type="checkbox" id="follow-logs" checked> Follow</label><button class="secondary small" id="clear-log-view">Clear view</button></div></div><div class="terminal" id="live-log"><div class="log-line muted-line">Waiting for activity…</div></div></article>
         <article class="panel tips"><p>ATTACH TROUBLESHOOTING ORDER</p><div><b>1</b><span>Confirm EPC and eNodeB IP reachability</span><b>2</b><span>Confirm S1 setup and matching MCC/MNC/TAC</span><b>3</b><span>Confirm IMSI, K, OPc and AMF</span><b>4</b><span>Confirm APN, GTP-U route, forwarding and NAT</span></div></article>
@@ -86,6 +95,7 @@
     </main>
   </div>
 
+  <datalist id="estate-zones"><option>North Vineyard</option><option>South Vineyard</option><option>Cellar</option><option>Winery</option><option>Estate Gate</option><option>Guest House</option></datalist>
   <dialog id="ue-dialog"><form method="dialog" class="dialog-card"><div class="dialog-head"><div><p>TRUSTED DEVICE PROFILE</p><h2>Add estate device</h2></div><button value="cancel" class="close">×</button></div><div id="ue-form" class="form-grid"></div><div class="dialog-actions"><button value="cancel" class="secondary">Cancel</button><button type="button" class="primary" id="save-ue">Provision device</button></div><div id="form-error" class="form-error"></div></form></dialog>
   <div id="toast"></div>
   <script>window.LTE_CONFIG={{ config|tojson }};</script>

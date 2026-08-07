@@ -1,4 +1,5 @@
 import json
+import ipaddress
 import os
 import re
 import shutil
@@ -7,6 +8,8 @@ import sqlite3
 import subprocess
 import tempfile
 import time
+import urllib.error
+import urllib.request
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -31,6 +34,7 @@ def settings():
         "epc_host": "192.168.1.151", "bts_host": "192.168.1.100",
         "epc_type": "nextepc", "mongodb_uri": "mongodb://192.168.1.151:27017/nextepc",
         "apn": "internet", "mcc": "001", "mnc": "01", "tac": 1,
+        "ue_subnet": "45.45.0.0/16", "epc_uplink_interface": "eth0",
         "sim_programming_enabled": False,
     }
     path = Path(os.getenv("OPTIONS_PATH", "/data/options.json"))
@@ -53,6 +57,20 @@ def db():
     )""")
     conn.execute("""CREATE TABLE IF NOT EXISTS events (
         id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, message TEXT, created_at INTEGER
+    )""")
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(subscribers)")}
+    if "zone" not in columns:
+        conn.execute("ALTER TABLE subscribers ADD COLUMN zone TEXT NOT NULL DEFAULT 'Unassigned'")
+    conn.execute("""CREATE TABLE IF NOT EXISTS status_history (
+        sampled_at INTEGER PRIMARY KEY, epc_online INTEGER NOT NULL, bts_online INTEGER NOT NULL,
+        s1_online INTEGER NOT NULL, db_online INTEGER NOT NULL
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY, value TEXT NOT NULL
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS alert_state (
+        target TEXT PRIMARY KEY, failures INTEGER NOT NULL DEFAULT 0,
+        active INTEGER NOT NULL DEFAULT 0, last_notified INTEGER NOT NULL DEFAULT 0
     )""")
     try:
         yield conn
@@ -99,6 +117,100 @@ def ping_check(host):
         return False
 
 
+ALERT_DEFAULTS = {"epc_enabled": True, "radio_enabled": True, "failure_threshold": 3, "cooldown_minutes": 60}
+
+
+def alert_settings():
+    result = dict(ALERT_DEFAULTS)
+    with db() as conn:
+        rows = conn.execute("SELECT key,value FROM app_settings WHERE key LIKE 'alert_%'").fetchall()
+    for row in rows:
+        key = row["key"][6:]
+        if key in ("epc_enabled", "radio_enabled"):
+            result[key] = row["value"] == "true"
+        elif key in ("failure_threshold", "cooldown_minutes"):
+            result[key] = int(row["value"])
+    return result
+
+
+def save_alert_settings(values):
+    clean = {
+        "epc_enabled": bool(values.get("epc_enabled")),
+        "radio_enabled": bool(values.get("radio_enabled")),
+        "failure_threshold": min(max(int(values.get("failure_threshold", 3)), 1), 10),
+        "cooldown_minutes": min(max(int(values.get("cooldown_minutes", 60)), 5), 1440),
+    }
+    with db() as conn:
+        for key, value in clean.items():
+            stored = str(value).lower() if isinstance(value, bool) else str(value)
+            conn.execute("INSERT OR REPLACE INTO app_settings(key,value) VALUES(?,?)", (f"alert_{key}", stored))
+    return clean
+
+
+def home_assistant_notification(target, online):
+    token = os.getenv("SUPERVISOR_TOKEN")
+    if not token:
+        return False
+    label = "EPC" if target == "epc" else "estate radio"
+    title = f"Baiamonte LTE — {label} {'restored' if online else 'offline'}"
+    message = (f"The {label} is reachable again and vineyard LTE service has recovered."
+               if online else f"The {label} has failed repeated health checks. Open LTE → Network care for guided checks.")
+    payload = json.dumps({"title": title, "message": message,
+                          "notification_id": f"baiamonte_lte_{target}"}).encode()
+    req = urllib.request.Request("http://supervisor/core/api/services/persistent_notification/create",
+        data=payload, headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as response:
+            return 200 <= response.status < 300
+    except (OSError, urllib.error.URLError):
+        return False
+
+
+def process_alert_state(status):
+    prefs, now = alert_settings(), int(time.time())
+    for target, online in (("epc", status["epc"]["online"]), ("radio", status["bts"]["online"])):
+        enabled = prefs[f"{'radio' if target == 'radio' else 'epc'}_enabled"]
+        with db() as conn:
+            row = conn.execute("SELECT failures,active,last_notified FROM alert_state WHERE target=?", (target,)).fetchone()
+        failures, active, last_notified = (row["failures"], bool(row["active"]), row["last_notified"]) if row else (0, False, 0)
+        message = None
+        if online:
+            if active:
+                delivered = home_assistant_notification(target, True)
+                message = f"{target.upper()} connectivity restored" + ("" if delivered else " (Home Assistant notification unavailable)")
+            failures, active = 0, False
+        elif enabled:
+            failures += 1
+            due = failures >= prefs["failure_threshold"] and (not active or now - last_notified >= prefs["cooldown_minutes"] * 60)
+            if due:
+                delivered = home_assistant_notification(target, False)
+                message = f"{target.upper()} offline alert triggered" + ("" if delivered else " (Home Assistant notification unavailable)")
+                active, last_notified = True, now
+        else:
+            failures, active = 0, False
+        with db() as conn:
+            conn.execute("INSERT OR REPLACE INTO alert_state(target,failures,active,last_notified) VALUES(?,?,?,?)",
+                         (target, failures, int(active), last_notified))
+        if message:
+            event("alert", message)
+
+
+def sample_network(process_alerts=False):
+    cfg = settings()
+    status = {"epc": {"host": cfg["epc_host"], "online": ping_check(cfg["epc_host"]),
+                      "s1": sctp_check(cfg["epc_host"]), "database": tcp_check(cfg["epc_host"], 27017)},
+              "bts": {"host": cfg["bts_host"], "online": ping_check(cfg["bts_host"]), "software": "FLF21"}}
+    sampled_at = int(time.time())
+    with db() as conn:
+        conn.execute("INSERT OR REPLACE INTO status_history(sampled_at,epc_online,bts_online,s1_online,db_online) VALUES(?,?,?,?,?)",
+            (sampled_at, int(status["epc"]["online"]), int(status["bts"]["online"]),
+             int(status["epc"]["s1"]["online"]), int(status["epc"]["database"]["online"])))
+        conn.execute("DELETE FROM status_history WHERE sampled_at < ?", (sampled_at - 30 * 86400,))
+    if process_alerts:
+        process_alert_state(status)
+    return status
+
+
 def diagnostic_checks():
     cfg = settings()
     checks = []
@@ -114,7 +226,37 @@ def diagnostic_checks():
     plmn_ok = bool(re.fullmatch(r"\d{3}", str(cfg["mcc"]))) and bool(re.fullmatch(r"\d{2,3}", str(cfg["mnc"])))
     add("PLMN format", plmn_ok, f"MCC {cfg['mcc']} / MNC {cfg['mnc']}", "Use a 3-digit MCC and 2- or 3-digit MNC matching the SIM and eNodeB.")
     add("Tracking area", 0 < int(cfg["tac"]) <= 65535, f"TAC {cfg['tac']}", "Use the same TAC in the EPC and Nokia commissioning profile.")
+    try:
+        ipaddress.ip_network(cfg["ue_subnet"], strict=False)
+        subnet_ok = True
+    except ValueError:
+        subnet_ok = False
+    add("UE Internet subnet", subnet_ok, f"Data network {cfg['ue_subnet']} via {cfg['epc_uplink_interface']}",
+        "Set the UE subnet to the address pool configured on the NextEPC PGW.")
+    internet = tcp_check("1.1.1.1", 443, timeout=1.5)
+    add("Management Internet uplink", internet["online"], "A public HTTPS endpoint is reachable from the app" if internet["online"] else "No public route is visible from Home Assistant",
+        "Restore the site Internet uplink before testing subscriber data. This check does not replace a test from an attached UE.")
     return checks
+
+
+@app.get("/api/internet-plan")
+def internet_plan():
+    cfg = settings()
+    subnet = str(cfg.get("ue_subnet", "45.45.0.0/16"))
+    interface = str(cfg.get("epc_uplink_interface", "eth0"))
+    try:
+        subnet = str(ipaddress.ip_network(subnet, strict=False))
+    except ValueError:
+        return jsonify({"error": "Invalid UE subnet in app configuration"}), 400
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,20}", interface):
+        return jsonify({"error": "Invalid EPC uplink interface in app configuration"}), 400
+    return jsonify({"subnet": subnet, "interface": interface, "apn": cfg["apn"], "steps": [
+        "Confirm the APN address pool matches the UE subnet.",
+        "Enable IPv4 forwarding on the EPC host.",
+        f"Masquerade traffic from {subnet} out {interface} and allow established return traffic.",
+        "Persist the forwarding and firewall rules using the EPC operating system's supported method.",
+        "Attach a subscriber and open a public HTTPS site from that UE for the final end-to-end test."
+    ], "note": "Apply routing on the EPC host. The Home Assistant app does not modify the EPC firewall automatically."})
 
 
 def analyze_core_log(text):
@@ -136,7 +278,8 @@ def analyze_core_log(text):
 
 
 def validate_subscriber(body):
-    values = {k: str(body.get(k, "")).strip() for k in ("imsi", "name", "k", "opc", "amf", "apn", "msisdn")}
+    values = {k: str(body.get(k, "")).strip() for k in ("imsi", "name", "k", "opc", "amf", "apn", "msisdn", "zone")}
+    values["zone"] = values["zone"][:40] or "Unassigned"
     values["k"], values["opc"], values["amf"] = values["k"].upper(), values["opc"].upper(), values["amf"].upper()
     if not IMSI_RE.fullmatch(values["imsi"]):
         raise ValueError("IMSI must contain 5–15 digits")
@@ -190,21 +333,18 @@ def index():
 @app.get("/api/overview")
 def overview():
     cfg = settings()
-    epc_ping, bts_ping = ping_check(cfg["epc_host"]), ping_check(cfg["bts_host"])
-    mme = sctp_check(cfg["epc_host"])
-    mongo = tcp_check(cfg["epc_host"], 27017)
+    status = sample_network()
     with db() as conn:
         ue_count = conn.execute("SELECT COUNT(*) FROM subscribers").fetchone()[0]
         events = [dict(row) for row in conn.execute("SELECT * FROM events ORDER BY id DESC LIMIT 8")]
-    return jsonify({"epc": {"host": cfg["epc_host"], "online": epc_ping, "s1": mme, "database": mongo},
-                    "bts": {"host": cfg["bts_host"], "online": bts_ping, "software": "FLF21"},
+    return jsonify({"epc": status["epc"], "bts": status["bts"],
                     "subscriber_count": ue_count, "events": events, "config": {k: v for k, v in cfg.items() if k != "mongodb_uri"}})
 
 
 @app.get("/api/subscribers")
 def list_subscribers():
     with db() as conn:
-        rows = conn.execute("SELECT imsi,name,apn,msisdn,created_at FROM subscribers ORDER BY created_at DESC").fetchall()
+        rows = conn.execute("SELECT imsi,name,zone,apn,msisdn,created_at FROM subscribers ORDER BY zone,name").fetchall()
     return jsonify([dict(r) for r in rows])
 
 
@@ -214,8 +354,8 @@ def create_subscriber():
         sub = validate_subscriber(request.get_json(silent=True) or {})
         result = provision_mongo(sub)
         with db() as conn:
-            conn.execute("INSERT OR REPLACE INTO subscribers(imsi,name,k,opc,amf,apn,msisdn,created_at) VALUES(?,?,?,?,?,?,?,?)",
-                         (sub["imsi"], sub["name"], sub["k"], sub["opc"], sub["amf"], sub["apn"], sub["msisdn"], int(time.time())))
+            conn.execute("INSERT OR REPLACE INTO subscribers(imsi,name,k,opc,amf,apn,msisdn,zone,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                         (sub["imsi"], sub["name"], sub["k"], sub["opc"], sub["amf"], sub["apn"], sub["msisdn"], sub["zone"], int(time.time())))
         event("subscriber", f"{sub['name']} ({sub['imsi']}) — {result}")
         return jsonify({"ok": True, "message": result}), 201
     except (ValueError, PyMongoError) as exc:
@@ -238,6 +378,48 @@ def delete_subscriber(imsi):
         conn.execute("DELETE FROM subscribers WHERE imsi=?", (imsi,))
     event("subscriber", f"Removed UE {imsi}")
     return jsonify({"ok": True})
+
+
+@app.patch("/api/subscribers/<imsi>/zone")
+def change_subscriber_zone(imsi):
+    if not IMSI_RE.fullmatch(imsi):
+        return jsonify({"error": "Invalid IMSI"}), 400
+    zone = str((request.get_json(silent=True) or {}).get("zone", "")).strip()[:40] or "Unassigned"
+    with db() as conn:
+        if not conn.execute("SELECT 1 FROM subscribers WHERE imsi=?", (imsi,)).fetchone():
+            return jsonify({"error": "Device not found"}), 404
+        conn.execute("UPDATE subscribers SET zone=? WHERE imsi=?", (zone, imsi))
+    event("subscriber", f"Moved UE {imsi} to {zone}")
+    return jsonify({"ok": True, "zone": zone})
+
+
+@app.get("/api/history")
+def connection_history():
+    hours = min(max(request.args.get("hours", 24, type=int), 1), 720)
+    since = int(time.time()) - hours * 3600
+    with db() as conn:
+        rows = [dict(row) for row in conn.execute(
+            "SELECT sampled_at,epc_online,bts_online,s1_online,db_online FROM status_history WHERE sampled_at>=? ORDER BY sampled_at", (since,))]
+    total = len(rows)
+    uptime = {key: round(100 * sum(row[key] for row in rows) / total, 1) if total else None
+              for key in ("epc_online", "bts_online")}
+    return jsonify({"hours": hours, "points": rows, "uptime": {"epc": uptime["epc_online"], "radio": uptime["bts_online"]}})
+
+
+@app.route("/api/alerts/settings", methods=["GET", "PUT"])
+def alerts_settings_api():
+    if request.method == "GET":
+        prefs = alert_settings()
+        with db() as conn:
+            states = {row["target"]: {"failures": row["failures"], "active": bool(row["active"]), "last_notified": row["last_notified"]}
+                      for row in conn.execute("SELECT * FROM alert_state")}
+        return jsonify({"settings": prefs, "states": states, "home_assistant_ready": bool(os.getenv("SUPERVISOR_TOKEN"))})
+    try:
+        clean = save_alert_settings(request.get_json(silent=True) or {})
+    except (TypeError, ValueError):
+        return jsonify({"error": "Use a 1–10 failure threshold and a 5–1440 minute cooldown"}), 400
+    event("alert", "Updated EPC and radio notification rules")
+    return jsonify({"ok": True, "settings": clean})
 
 
 @app.post("/api/commissioning")

@@ -44,9 +44,43 @@ class AppTests(unittest.TestCase):
         original = self.server.settings
         try:
             self.server.settings = lambda: {"epc_type": "local", "apn": "internet", "mcc": "001", "mnc": "01", "tac": 1, "sim_programming_enabled": False}
-            profile = {"imsi": "001010000000001", "name": "Test UE", "k": "A" * 32, "opc": "B" * 32, "amf": "8000", "apn": "internet", "msisdn": ""}
+            profile = {"imsi": "001010000000001", "name": "Test UE", "zone": "Cellar", "k": "A" * 32, "opc": "B" * 32, "amf": "8000", "apn": "internet", "msisdn": ""}
             self.assertEqual(self.client.post("/api/subscribers", json=profile).status_code, 201)
-            self.assertEqual(len(self.client.get("/api/subscribers").get_json()), 1)
+            rows = self.client.get("/api/subscribers").get_json()
+            self.assertEqual(rows[0]["zone"], "Cellar")
+            changed = self.client.patch("/api/subscribers/001010000000001/zone", json={"zone": "North Vineyard"})
+            self.assertEqual(changed.status_code, 200)
+            self.assertEqual(self.client.get("/api/subscribers").get_json()[0]["zone"], "North Vineyard")
+        finally:
+            self.server.settings = original
+
+    def test_history_returns_uptime(self):
+        with self.server.db() as conn:
+            conn.execute("DELETE FROM status_history")
+            now = int(self.server.time.time())
+            conn.execute("INSERT INTO status_history VALUES(?,?,?,?,?)", (now - 2, 1, 0, 1, 1))
+            conn.execute("INSERT INTO status_history VALUES(?,?,?,?,?)", (now - 1, 1, 1, 1, 1))
+        data = self.client.get("/api/history?hours=6").get_json()
+        self.assertEqual(data["uptime"]["epc"], 100.0)
+        self.assertEqual(data["uptime"]["radio"], 50.0)
+
+    def test_alert_settings_are_configurable(self):
+        response = self.client.put("/api/alerts/settings", json={
+            "epc_enabled": True, "radio_enabled": False,
+            "failure_threshold": 5, "cooldown_minutes": 240,
+        })
+        self.assertEqual(response.status_code, 200)
+        settings = self.client.get("/api/alerts/settings").get_json()["settings"]
+        self.assertEqual(settings["failure_threshold"], 5)
+        self.assertFalse(settings["radio_enabled"])
+
+    def test_internet_plan_is_safe_and_specific(self):
+        original = self.server.settings
+        try:
+            self.server.settings = lambda: {"ue_subnet": "45.45.0.0/16", "epc_uplink_interface": "eth0", "apn": "internet"}
+            data = self.client.get("/api/internet-plan").get_json()
+            self.assertEqual(data["subnet"], "45.45.0.0/16")
+            self.assertIn("test", data["steps"][-1].lower())
         finally:
             self.server.settings = original
 
