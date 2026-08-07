@@ -1,6 +1,6 @@
 # Baiamonte LTE
 
-A Home Assistant app (formerly called an add-on) for controlling Baiamonte’s internal LTE network. It provides a single admin-only page for EPC and Nokia eNodeB health, UE subscriber provisioning, commissioning-file intake, diagnostics, and guarded programmable-SIM preparation.
+A Home Assistant app (formerly called an add-on) for controlling Baiamonte’s internal LTE network. It provides a single admin-only page for EPC and Nokia eNodeB health, vineyard-zone device grouping, availability history, offline notifications, UE subscriber provisioning, commissioning-file intake, diagnostics, Internet-breakout checks, and guarded programmable-SIM preparation.
 
 Preconfigured defaults:
 
@@ -9,6 +9,7 @@ Preconfigured defaults:
 - eNodeB software: FLF21
 - S1AP: SCTP 36412
 - Subscriber backend: legacy NextEPC MongoDB
+- Default UE data subnet: `45.45.0.0/16` via EPC uplink `eth0` (both configurable)
 
 See [lte_manager/DOCS.md](lte_manager/DOCS.md) for installation and safe commissioning steps.
 

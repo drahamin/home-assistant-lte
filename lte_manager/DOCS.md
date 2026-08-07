@@ -22,8 +22,26 @@ In Site Manager, verify:
 
 ## UEs and SIMs
 
-The UE page writes subscribers to NextEPC/Open5GS MongoDB and keeps a local index for the dashboard. K and OPc are sensitive; keep Baiamonte LTE and Home Assistant access private.
+The UE page writes subscribers to NextEPC/Open5GS MongoDB and keeps a local index for the dashboard. Assign each device to a vineyard zone for filtering and operations. K and OPc are sensitive; keep Baiamonte LTE and Home Assistant access private.
 
 The SIM page supports USB CCID readers through PC/SC, validates a profile, reports the detected reader name, and generates a reviewable pySim worksheet. Physical writing remains disabled by default. Enable it only when a compatible USB reader and programmable test SIM are attached. The exact administrative key and command sequence depend on the SIM vendor. A non-CCID programmer may require its vendor driver.
+
+## Subscriber Internet access
+
+Set `ue_subnet` to the address pool configured on the NextEPC PGW and set `epc_uplink_interface` to the EPC server's Internet-facing interface. Network Care then shows the expected UE → APN → PGW → NAT → Internet path and includes these checks in diagnostics.
+
+On the EPC host, an administrator must:
+
+1. Confirm the APN address pool matches `ue_subnet`.
+2. Enable IPv4 forwarding.
+3. Masquerade the UE subnet out `epc_uplink_interface` and allow established return traffic.
+4. Persist those settings using the EPC operating system's supported firewall method.
+5. Attach a subscriber and open a public HTTPS site from that UE. This is the required end-to-end proof that subscriber Internet routing works.
+
+The Home Assistant app deliberately does not rewrite the firewall on the separate EPC server. Apply these changes directly on `192.168.1.151`, after confirming the correct subnet and uplink interface.
+
+## Availability alerts
+
+The app samples EPC and radio reachability every minute and retains 30 days of connection history. On the Overview page, choose which offline conditions should notify Home Assistant, how many failed checks trigger an alert, and the minimum repeat interval. A recovery notification replaces the offline notification when service returns.
 
 Only operate radio equipment on frequencies, power levels, and locations you are authorized to use.

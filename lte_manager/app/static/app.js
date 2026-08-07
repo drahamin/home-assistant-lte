@@ -1,26 +1,103 @@
-const $=(s,r=document)=>r.querySelector(s);const $$=(s,r=document)=>[...r.querySelectorAll(s)];
+const $=(s,r=document)=>r.querySelector(s);
+const $$=(s,r=document)=>[...r.querySelectorAll(s)];
 const api=p=>new URL(p.replace(/^\//,''),document.baseURI).toString();
-const fields=[['name','DEVICE NAME','Lab phone'],['imsi','IMSI','001010000000001'],['k','K · 32 HEX',''],['opc','OPc · 32 HEX',''],['amf','AMF · 4 HEX','8000'],['apn','APN',window.LTE_CONFIG.apn],['msisdn','MSISDN · OPTIONAL','']];
-function fieldMarkup(compact=false){return fields.filter(x=>!compact||['name','imsi','k','opc','amf','apn'].includes(x[0])).map(([n,l,p],i)=>`<div class="field ${i>4?'wide':''}"><label>${l}</label><input name="${n}" placeholder="${p}" value="${['amf','apn'].includes(n)?p:''}" ${['k','opc'].includes(n)?'type="password" autocomplete="off"':''}></div>`).join('')}
-$('#ue-form').innerHTML=fieldMarkup();$('#sim-form').innerHTML=fieldMarkup(true);
+const baseZones=['North Vineyard','South Vineyard','Cellar','Winery','Estate Gate','Guest House','Unassigned'];
+const fields=[['name','DEVICE NAME','Field sensor'],['zone','VINEYARD ZONE','North Vineyard'],['imsi','IMSI','001010000000001'],['k','K · 32 HEX',''],['opc','OPc · 32 HEX',''],['amf','AMF · 4 HEX','8000'],['apn','APN',window.LTE_CONFIG.apn],['msisdn','MSISDN · OPTIONAL','']];
+let subscribers=[];
+let activeZone='All zones';
+
+function fieldMarkup(compact=false){return fields.filter(x=>!compact||['name','imsi','k','opc','amf','apn'].includes(x[0])).map(([n,l,p],i)=>`<div class="field ${i>5?'wide':''}"><label>${l}</label><input name="${n}" placeholder="${p}" value="${['amf','apn'].includes(n)?p:''}" ${n==='zone'?'list="estate-zones"':''} ${['k','opc'].includes(n)?'type="password" autocomplete="off"':''}></div>`).join('')}
+$('#ue-form').innerHTML=fieldMarkup();
+$('#sim-form').innerHTML=fieldMarkup(true);
+
 function badge(el,online){el.textContent=online?'Online':'Offline';el.className=`badge ${online?'online':'offline'}`}
 function toast(msg){const el=$('#toast');el.textContent=msg;el.classList.add('show');setTimeout(()=>el.classList.remove('show'),2600)}
+function escapeHtml(s){const d=document.createElement('div');d.textContent=s??'';return d.innerHTML}
 async function jsonFetch(path,opt){const r=await fetch(api(path),opt);const j=await r.json();if(!r.ok)throw new Error(j.error||'Request failed');return j}
-async function refresh(){const refreshButton=$('#refresh');refreshButton.classList.add('loading');refreshButton.disabled=true;try{const d=await jsonFetch('api/overview');badge($('#epc-badge'),d.epc.online);badge($('#bts-badge'),d.bts.online);$('#s1-status').textContent=d.epc.s1.online?`${d.epc.s1.latency_ms} ms`:'Closed';$('#db-status').textContent=d.epc.database.online?'Reachable':'Unavailable';$('#ue-count').textContent=d.subscriber_count;const healthy=d.epc.online&&d.bts.online,partial=d.epc.online||d.bts.online;$('#estate-status').textContent=healthy?'Ready':partial?'Needs attention':'Action needed';$('#estate-status').className=healthy?'good':partial?'warn':'bad';$('#estate-health').textContent=healthy?'Estate network ready for operations':partial?'Part of the estate network needs attention':'Core and radio are currently unreachable';$('#hero-pulse').classList.toggle('alert',!healthy);$('#last-checked').textContent=`Checked ${new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}`;$('#events').innerHTML=d.events.length?d.events.map(e=>`<div class="event">${escapeHtml(e.message)}<small>${new Date(e.created_at*1000).toLocaleString()}</small></div>`).join(''):'<div class="empty">No events yet</div>';await loadUEs()}catch(e){$('#estate-status').textContent='Check failed';$('#estate-status').className='bad';$('#estate-health').textContent='Unable to read the estate network';toast(e.message)}finally{refreshButton.classList.remove('loading');refreshButton.disabled=false}}
-function escapeHtml(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
-async function loadUEs(){const rows=await jsonFetch('api/subscribers');$('#ue-rows').innerHTML=rows.map(r=>`<tr><td><b>${escapeHtml(r.name)}</b></td><td>${r.imsi}</td><td>${escapeHtml(r.apn)}</td><td>${escapeHtml(r.msisdn||'—')}</td><td><button data-delete="${r.imsi}" title="Remove">Remove</button></td></tr>`).join('');$('#ue-empty').style.display=rows.length?'none':'block';$$('[data-delete]').forEach(b=>b.onclick=async()=>{if(!confirm(`Remove UE ${b.dataset.delete} from the EPC?`))return;try{await jsonFetch(`api/subscribers/${b.dataset.delete}`,{method:'DELETE'});toast('UE removed');refresh()}catch(e){toast(e.message)}})}
-$$('.nav').forEach(b=>b.onclick=()=>showPage(b.dataset.page));$$('[data-go]').forEach(b=>b.onclick=()=>showPage(b.dataset.go));
-function showPage(id,updateHash=true){if(!document.getElementById(id))id='overview';$$('.nav').forEach(n=>n.classList.toggle('active',n.dataset.page===id));$$('.page').forEach(p=>p.classList.toggle('active',p.id===id));$('#page-title').textContent={overview:'Vineyard network',ues:'Estate devices',bts:'Estate radio',sim:'SIM workbench',diagnostics:'Network care'}[id];if(updateHash&&location.hash!==`#${id}`)history.replaceState(null,'',`#${id}`);if(id==='sim')readerStatus();if(id==='diagnostics')loadLogs();window.scrollTo({top:0,behavior:'smooth'})}
+
+async function refresh(){
+  const button=$('#refresh');button.classList.add('loading');button.disabled=true;
+  try{
+    const d=await jsonFetch('api/overview');
+    badge($('#epc-badge'),d.epc.online);badge($('#bts-badge'),d.bts.online);
+    $('#s1-status').textContent=d.epc.s1.online?`${d.epc.s1.latency_ms} ms`:'Closed';
+    $('#db-status').textContent=d.epc.database.online?'Reachable':'Unavailable';
+    $('#ue-count').textContent=d.subscriber_count;
+    const healthy=d.epc.online&&d.bts.online,partial=d.epc.online||d.bts.online;
+    $('#estate-status').textContent=healthy?'Ready':partial?'Needs attention':'Action needed';
+    $('#estate-status').className=healthy?'good':partial?'warn':'bad';
+    $('#estate-health').textContent=healthy?'Estate network ready for operations':partial?'Part of the estate network needs attention':'Core and radio are currently unreachable';
+    $('#hero-pulse').classList.toggle('alert',!healthy);
+    $('#last-checked').textContent=`Checked ${new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}`;
+    $('#events').innerHTML=d.events.length?d.events.map(e=>`<div class="event">${escapeHtml(e.message)}<small>${new Date(e.created_at*1000).toLocaleString()}</small></div>`).join(''):'<div class="empty">No events yet</div>';
+    await Promise.all([loadUEs(),loadHistory(currentHistoryHours()),loadAlertSettings()]);
+  }catch(e){
+    $('#estate-status').textContent='Check failed';$('#estate-status').className='bad';
+    $('#estate-health').textContent='Unable to read the estate network';toast(e.message);
+  }finally{button.classList.remove('loading');button.disabled=false}
+}
+
+function zoneOptions(current){return [...new Set([current,...baseZones,...subscribers.map(row=>row.zone)])].filter(Boolean).map(zone=>`<option ${zone===current?'selected':''}>${escapeHtml(zone)}</option>`).join('')}
+function renderSubscribers(){
+  const visible=activeZone==='All zones'?subscribers:subscribers.filter(row=>row.zone===activeZone);
+  const counts=subscribers.reduce((map,row)=>(map[row.zone]=(map[row.zone]||0)+1,map),{});
+  $('#zone-summary').innerHTML=[['All zones',subscribers.length],...Object.entries(counts).sort()].map(([zone,count])=>`<button class="zone-chip ${zone===activeZone?'active':''}" data-zone-filter="${escapeHtml(zone)}"><svg><use href="#i-zone"></use></svg><span>${escapeHtml(zone)}</span><b>${count}</b></button>`).join('');
+  $('#ue-rows').innerHTML=visible.map(row=>`<tr><td><b>${escapeHtml(row.name)}</b></td><td><select class="zone-select" data-zone-imsi="${row.imsi}">${zoneOptions(row.zone)}</select></td><td>${row.imsi}</td><td>${escapeHtml(row.apn)}</td><td>${escapeHtml(row.msisdn||'—')}</td><td><button data-delete="${row.imsi}" title="Remove">Remove</button></td></tr>`).join('');
+  $('#ue-empty').style.display=visible.length?'none':'block';
+  $('#ue-empty').textContent=subscribers.length?'No devices in this zone.':'No estate devices provisioned yet.';
+  $$('[data-zone-filter]').forEach(button=>button.onclick=()=>{activeZone=button.dataset.zoneFilter;renderSubscribers()});
+  $$('[data-zone-imsi]').forEach(select=>select.onchange=async()=>{try{await jsonFetch(`api/subscribers/${select.dataset.zoneImsi}/zone`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({zone:select.value})});toast('Vineyard zone updated');await loadUEs()}catch(e){toast(e.message)}});
+  $$('[data-delete]').forEach(button=>button.onclick=async()=>{if(!confirm(`Remove UE ${button.dataset.delete} from the EPC?`))return;try{await jsonFetch(`api/subscribers/${button.dataset.delete}`,{method:'DELETE'});toast('UE removed');refresh()}catch(e){toast(e.message)}});
+}
+async function loadUEs(){subscribers=await jsonFetch('api/subscribers');renderSubscribers()}
+
+function currentHistoryHours(){return Number($('.range-picker .active')?.dataset.hours||24)}
+function historyPath(points,key,onlineY,offlineY,width){
+  if(!points.length)return '';
+  const first=points[0].sampled_at,last=points[points.length-1].sampled_at,span=Math.max(last-first,1);
+  let path='';
+  points.forEach((point,index)=>{const x=16+(point.sampled_at-first)/span*(width-32),y=point[key]?onlineY:offlineY;if(index===0)path=`M ${x} ${y}`;else path+=` H ${x} V ${y}`});
+  return path;
+}
+async function loadHistory(hours=24){
+  try{
+    const data=await jsonFetch(`api/history?hours=${hours}`),width=720;
+    $('#epc-uptime').textContent=data.uptime.epc===null?'No data':`${data.uptime.epc}%`;
+    $('#radio-uptime').textContent=data.uptime.radio===null?'No data':`${data.uptime.radio}%`;
+    $('#history-samples').textContent=data.points.length?`${data.points.length} checks recorded`:'History begins after the first check';
+    if(!data.points.length){$('#history-chart').innerHTML='<div class="empty chart-empty">Monitoring is starting. Availability will appear here automatically.</div>';return}
+    const epc=historyPath(data.points,'epc_online',38,62,width),radio=historyPath(data.points,'bts_online',98,122,width);
+    $('#history-chart').innerHTML=`<svg viewBox="0 0 ${width} 150" role="img" aria-label="Connection history"><line x1="16" y1="75" x2="704" y2="75" class="chart-divider"/><text x="16" y="20">EPC</text><text x="16" y="88">RADIO</text><path d="${epc}" class="chart-line epc-line"/><path d="${radio}" class="chart-line radio-line"/><text x="16" y="146">${hours===168?'7 days ago':hours+' hours ago'}</text><text x="704" y="146" text-anchor="end">Now</text></svg>`;
+  }catch(e){$('#history-chart').innerHTML='<div class="empty chart-empty">History is temporarily unavailable.</div>'}
+}
+$$('.range-picker button').forEach(button=>button.onclick=()=>{$$('.range-picker button').forEach(b=>b.classList.toggle('active',b===button));loadHistory(Number(button.dataset.hours))});
+
+async function loadAlertSettings(){
+  try{
+    const data=await jsonFetch('api/alerts/settings'),form=$('#alert-form'),prefs=data.settings;
+    form.elements.epc_enabled.checked=prefs.epc_enabled;form.elements.radio_enabled.checked=prefs.radio_enabled;
+    form.elements.failure_threshold.value=String(prefs.failure_threshold);form.elements.cooldown_minutes.value=String(prefs.cooldown_minutes);
+    const active=Object.entries(data.states).filter(([,state])=>state.active).map(([name])=>name.toUpperCase());
+    $('#alert-readiness').className=`alert-readiness ${data.home_assistant_ready?'ready':'warning'}`;
+    $('#alert-readiness').textContent=active.length?`Active alert: ${active.join(' + ')}`:data.home_assistant_ready?'Home Assistant notifications ready':'Notifications become active when installed in Home Assistant';
+  }catch(e){$('#alert-readiness').textContent='Alert settings unavailable'}
+}
+$('#alert-form').onsubmit=async event=>{event.preventDefault();const form=event.currentTarget,body={epc_enabled:form.elements.epc_enabled.checked,radio_enabled:form.elements.radio_enabled.checked,failure_threshold:Number(form.elements.failure_threshold.value),cooldown_minutes:Number(form.elements.cooldown_minutes.value)};try{await jsonFetch('api/alerts/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});toast('Alert rules saved');loadAlertSettings()}catch(e){toast(e.message)}};
+
+$$('.nav').forEach(button=>button.onclick=()=>showPage(button.dataset.page));$$('[data-go]').forEach(button=>button.onclick=()=>showPage(button.dataset.go));
+function showPage(id,updateHash=true){if(!document.getElementById(id))id='overview';$$('.nav').forEach(n=>n.classList.toggle('active',n.dataset.page===id));$$('.page').forEach(p=>p.classList.toggle('active',p.id===id));$('#page-title').textContent={overview:'Vineyard network',ues:'Estate devices',bts:'Estate radio',sim:'SIM workbench',diagnostics:'Network care'}[id];if(updateHash&&location.hash!==`#${id}`)history.replaceState(null,'',`#${id}`);if(id==='sim')readerStatus();if(id==='diagnostics'){loadLogs();loadInternetPlan()}window.scrollTo({top:0,behavior:'smooth'})}
 $('#refresh').onclick=refresh;$('#add-ue').onclick=()=>{$('#form-error').textContent='';$('#ue-dialog').showModal()};
-$$("[data-action]").forEach(button=>button.onclick=()=>{const action=button.dataset.action;if(action==='add-ue'){showPage('ues');$('#add-ue').click()}else if(action==='diagnostics'){showPage('diagnostics');$('#run-diagnostics').click()}else showPage(action)});
+$$('[data-action]').forEach(button=>button.onclick=()=>{const action=button.dataset.action;if(action==='add-ue'){showPage('ues');$('#add-ue').click()}else if(action==='diagnostics'){showPage('diagnostics');$('#run-diagnostics').click()}else showPage(action)});
 $('#save-ue').onclick=async()=>{const body=Object.fromEntries(new FormData($('#ue-dialog form')));try{await jsonFetch('api/subscribers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});$('#ue-dialog').close();$('#ue-dialog form').reset();toast('Estate device provisioned');refresh()}catch(e){$('#form-error').textContent=e.message}};
-$('#commission-form').onsubmit=async e=>{e.preventDefault();try{const r=await fetch(api('api/commissioning'),{method:'POST',body:new FormData(e.target)});const j=await r.json();if(!r.ok)throw new Error(j.error);$('#commission-result').className='warning';$('#commission-result').textContent=`Stored ${j.name} (${j.size.toLocaleString()} bytes). Apply it in licensed Nokia BTS Site Manager.`;toast('Commissioning file stored privately')}catch(err){toast(err.message)}};
-async function readerStatus(){try{const d=await jsonFetch('api/sim/readers');badge($('#sim-ready'),d.ready);$('#sim-ready').textContent=d.ready?'Ready':'Setup needed';const rows=[['Physical writes enabled',d.enabled],['pySim tools installed',d.pysim],['USB bus visible',d.usb_visible],['CCID / PC-SC reader',d.readers.length>0]];$('#reader-details').innerHTML=rows.map(([n,v])=>`<div class="ready-row"><span>${n}</span><b style="color:${v?'var(--green)':'var(--amber)'}">${v?'Yes':'No'}</b></div>`).join('')+(d.readers.length?`<div class="warning">Detected: ${escapeHtml(d.readers.join(', '))}</div>`:'')}catch(e){toast(e.message)}}
-$('#generate-script').onclick=async()=>{const body=Object.fromEntries(new FormData($('#sim-form')));try{const r=await fetch(api('api/sim/script'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!r.ok){const j=await r.json();throw new Error(j.error)}const blob=await r.blob(),u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download=`pysim-${body.imsi}.txt`;a.click();URL.revokeObjectURL(u);toast('Worksheet generated')}catch(e){toast(e.message)}};
-async function loadLogs(){try{const rows=await jsonFetch('api/logs?limit=300');$('#live-log').innerHTML=rows.length?rows.map(r=>`<div class="log-line"><time>${new Date(r.created_at*1000).toLocaleTimeString()}</time><span class="log-kind ${r.kind}">${escapeHtml(r.kind.toUpperCase())}</span><span>${escapeHtml(r.message)}</span></div>`).join(''):'<div class="log-line muted-line">No activity logged yet.</div>';if($('#follow-logs').checked)$('#live-log').scrollTop=$('#live-log').scrollHeight}catch(e){toast(e.message)}}
-$('#run-diagnostics').onclick=async()=>{const b=$('#run-diagnostics');b.disabled=true;b.textContent='Running…';try{const d=await jsonFetch('api/diagnostics/run',{method:'POST'}),ok=!d.failures;badge($('#diagnostic-summary'),ok);$('#diagnostic-summary').textContent=ok?'All checks passed':`${d.failures} need attention`;$('#diagnostic-results').innerHTML=d.checks.map(c=>`<div class="check ${c.ok?'pass':'fail'}"><span>${c.ok?'✓':'!'}</span><div><b>${escapeHtml(c.name)}</b><small>${escapeHtml(c.detail)}</small>${!c.ok&&c.suggestion?`<em>${escapeHtml(c.suggestion)}</em>`:''}</div></div>`).join('');loadLogs()}catch(e){toast(e.message)}finally{b.disabled=false;b.textContent='Run diagnostics'}};
-$('#log-analyze-form').onsubmit=async e=>{e.preventDefault();try{const r=await fetch(api('api/logs/analyze'),{method:'POST',body:new FormData(e.target)}),d=await r.json();if(!r.ok)throw new Error(d.error);$('#log-findings').innerHTML=d.findings.length?`<p class="muted">${d.lines} lines analyzed</p>`+d.findings.map(f=>`<div class="finding"><b>${escapeHtml(f.title)} · ${f.count}</b><span>${escapeHtml(f.action)}</span></div>`).join(''):`<div class="warning success">No known error patterns found in ${d.lines} lines.</div>`;loadLogs()}catch(err){toast(err.message)}};
-$('#clear-log-view').onclick=()=>{$('#live-log').innerHTML='<div class="log-line muted-line">View cleared. New activity will appear here.</div>'};setInterval(()=>{if($('#diagnostics').classList.contains('active')&&$('#follow-logs').checked)loadLogs()},4000);
+$('#commission-form').onsubmit=async event=>{event.preventDefault();try{const response=await fetch(api('api/commissioning'),{method:'POST',body:new FormData(event.target)}),data=await response.json();if(!response.ok)throw new Error(data.error);$('#commission-result').className='warning';$('#commission-result').textContent=`Stored ${data.name} (${data.size.toLocaleString()} bytes). Apply it in licensed Nokia BTS Site Manager.`;toast('Commissioning file stored privately')}catch(e){toast(e.message)}};
+async function readerStatus(){try{const data=await jsonFetch('api/sim/readers');badge($('#sim-ready'),data.ready);$('#sim-ready').textContent=data.ready?'Ready':'Setup needed';const rows=[['Physical writes enabled',data.enabled],['pySim tools installed',data.pysim],['USB bus visible',data.usb_visible],['CCID / PC-SC reader',data.readers.length>0]];$('#reader-details').innerHTML=rows.map(([name,ready])=>`<div class="ready-row"><span>${name}</span><b style="color:${ready?'var(--green)':'var(--amber)'}">${ready?'Yes':'No'}</b></div>`).join('')+(data.readers.length?`<div class="warning">Detected: ${escapeHtml(data.readers.join(', '))}</div>`:'')}catch(e){toast(e.message)}}
+$('#generate-script').onclick=async()=>{const body=Object.fromEntries(new FormData($('#sim-form')));try{const response=await fetch(api('api/sim/script'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!response.ok){const data=await response.json();throw new Error(data.error)}const blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=`pysim-${body.imsi}.txt`;link.click();URL.revokeObjectURL(url);toast('Worksheet generated')}catch(e){toast(e.message)}};
+async function loadLogs(){try{const rows=await jsonFetch('api/logs?limit=300');$('#live-log').innerHTML=rows.length?rows.map(row=>`<div class="log-line"><time>${new Date(row.created_at*1000).toLocaleTimeString()}</time><span class="log-kind ${row.kind}">${escapeHtml(row.kind.toUpperCase())}</span><span>${escapeHtml(row.message)}</span></div>`).join(''):'<div class="log-line muted-line">No activity logged yet.</div>';if($('#follow-logs').checked)$('#live-log').scrollTop=$('#live-log').scrollHeight}catch(e){toast(e.message)}}
+async function loadInternetPlan(){try{const data=await jsonFetch('api/internet-plan');$('#internet-plan').innerHTML=data.steps.map((step,index)=>`<div class="breakout-step"><b>${index+1}</b>${escapeHtml(step)}</div>`).join('')+`<div class="breakout-note">${escapeHtml(data.note)}</div>`}catch(e){$('#internet-plan').innerHTML=`<div class="warning">${escapeHtml(e.message)}</div>`}}
+$('#run-diagnostics').onclick=async()=>{const button=$('#run-diagnostics');button.disabled=true;button.textContent='Running…';try{const data=await jsonFetch('api/diagnostics/run',{method:'POST'}),ok=!data.failures;badge($('#diagnostic-summary'),ok);$('#diagnostic-summary').textContent=ok?'All checks passed':`${data.failures} need attention`;$('#diagnostic-results').innerHTML=data.checks.map(check=>`<div class="check ${check.ok?'pass':'fail'}"><span>${check.ok?'✓':'!'}</span><div><b>${escapeHtml(check.name)}</b><small>${escapeHtml(check.detail)}</small>${!check.ok&&check.suggestion?`<em>${escapeHtml(check.suggestion)}</em>`:''}</div></div>`).join('');loadLogs()}catch(e){toast(e.message)}finally{button.disabled=false;button.textContent='Run diagnostics'}};
+$('#log-analyze-form').onsubmit=async event=>{event.preventDefault();try{const response=await fetch(api('api/logs/analyze'),{method:'POST',body:new FormData(event.target)}),data=await response.json();if(!response.ok)throw new Error(data.error);$('#log-findings').innerHTML=data.findings.length?`<p class="muted">${data.lines} lines analyzed</p>`+data.findings.map(f=>`<div class="finding"><b>${escapeHtml(f.title)} · ${f.count}</b><span>${escapeHtml(f.action)}</span></div>`).join(''):`<div class="warning success">No known error patterns found in ${data.lines} lines.</div>`;loadLogs()}catch(e){toast(e.message)}};
+$('#clear-log-view').onclick=()=>{$('#live-log').innerHTML='<div class="log-line muted-line">View cleared. New activity will appear here.</div>'};
+setInterval(()=>{if($('#diagnostics').classList.contains('active')&&$('#follow-logs').checked)loadLogs()},4000);
 $$('.checklist input[type="checkbox"]').forEach((input,index)=>{const key=`baiamonte-bts-check-${index}`;input.checked=localStorage.getItem(key)==='true';input.onchange=()=>localStorage.setItem(key,String(input.checked))});
 window.addEventListener('hashchange',()=>showPage(location.hash.slice(1)||'overview',false));
 showPage(location.hash.slice(1)||'overview',false);refresh();
