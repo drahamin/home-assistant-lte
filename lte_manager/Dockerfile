@@ -1,4 +1,4 @@
-FROM ghcr.io/home-assistant/base-python:3.12-alpine3.20
+FROM python:3.12-alpine3.20
 
 ARG BUILD_VERSION
 ARG BUILD_ARCH
