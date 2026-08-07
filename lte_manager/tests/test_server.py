@@ -1,6 +1,8 @@
 import importlib
 import io
 import os
+from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -131,10 +133,51 @@ class AppTests(unittest.TestCase):
                 "epc_ssh_user": "root", "epc_ssh_port": 22, "ue_subnet": "45.45.0.0/16",
                 "epc_uplink_interface": "eth0", "apn": "internet",
             }
-            response = self.client.post("/api/epc-routing/key/generate", json={})
+            response = self.client.post("/api/epc-routing/key/generate", json={"confirm": "REPLACE KEY"})
             self.assertEqual(response.status_code, 200)
             self.assertTrue(response.get_json()["public_key"].startswith("ssh-ed25519 "))
             self.assertNotIn("PRIVATE", response.get_data(as_text=True))
+        finally:
+            self.server.settings = original
+
+    def test_extensionless_private_key_upload_is_accepted(self):
+        original = self.server.settings
+        generated_key = Path(self.temp.name) / "id_ed25519_upload_test"
+        try:
+            self.server.settings = lambda: {
+                "epc_routing_management_enabled": True, "epc_host": "192.168.1.151",
+                "epc_ssh_user": "root", "epc_ssh_port": 22, "ue_subnet": "45.45.0.0/16",
+                "epc_uplink_interface": "eth0", "apn": "internet",
+            }
+            subprocess.run(
+                ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(generated_key)],
+                check=True,
+            )
+            payload = {"file": (io.BytesIO(generated_key.read_bytes()), "id_ed25519")}
+            response = self.client.post(
+                "/api/epc-routing/key", data=payload, content_type="multipart/form-data",
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(self.server.EPC_SSH_KEY.exists())
+            self.assertEqual(self.server.EPC_SSH_KEY.stat().st_mode & 0o777, 0o600)
+        finally:
+            self.server.settings = original
+
+    def test_public_key_upload_explains_private_file_is_required(self):
+        original = self.server.settings
+        try:
+            self.server.settings = lambda: {
+                "epc_routing_management_enabled": True, "epc_host": "192.168.1.151",
+                "epc_ssh_user": "root", "epc_ssh_port": 22, "ue_subnet": "45.45.0.0/16",
+                "epc_uplink_interface": "eth0", "apn": "internet",
+            }
+            payload = {"file": (io.BytesIO(b"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test\n"), "id_ed25519.pub")}
+            response = self.client.post(
+                "/api/epc-routing/key", data=payload, content_type="multipart/form-data",
+            )
+            self.assertEqual(response.status_code, 400)
+            self.assertIn("public key", response.get_json()["error"])
+            self.assertIn("without .pub", response.get_json()["error"])
         finally:
             self.server.settings = original
 

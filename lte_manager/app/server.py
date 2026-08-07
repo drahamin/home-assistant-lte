@@ -442,19 +442,38 @@ def epc_routing_key():
         require_routing_enabled()
         upload = request.files.get("file")
         if not upload or not upload.filename:
-            raise ValueError("Choose an unencrypted SSH private key")
+            raise ValueError("Choose an SSH private key file. Standard names such as id_ed25519 are supported.")
         raw = upload.stream.read(65_537)
+        if not raw.strip():
+            raise ValueError("The selected SSH private key file is empty")
         if len(raw) > 65_536:
             raise ValueError("SSH key must be 64 KB or smaller")
+        normalized = raw.lstrip()
+        if normalized.startswith((b"ssh-", b"ecdsa-")) or b"BEGIN PUBLIC KEY" in normalized[:256]:
+            raise ValueError(
+                "That is a public key. Choose the private key file (usually id_ed25519 without .pub), "
+                "or use Generate dedicated SSH key."
+            )
         fd, temp_path = tempfile.mkstemp(prefix="epc-key-", dir=CONFIG_DIR)
         try:
             with os.fdopen(fd, "wb") as handle:
                 handle.write(raw)
             os.chmod(temp_path, 0o600)
-            result = subprocess.run(["ssh-keygen", "-y", "-P", "", "-f", temp_path], capture_output=True,
-                                    timeout=5, check=False)
+            result = subprocess.run(
+                ["ssh-keygen", "-y", "-P", "", "-f", temp_path],
+                stdin=subprocess.DEVNULL, capture_output=True, timeout=5, check=False,
+            )
             if result.returncode != 0:
-                raise ValueError("Use a valid, unencrypted OpenSSH private key")
+                key_error = result.stderr.decode("utf-8", errors="replace").lower()
+                if "passphrase" in key_error or b"ENCRYPTED" in normalized[:512]:
+                    raise ValueError(
+                        "Encrypted private keys cannot be used by this unattended app. "
+                        "Use Generate dedicated SSH key or a dedicated unencrypted key."
+                    )
+                raise ValueError(
+                    "This is not a readable OpenSSH or PEM private key. Extensionless files are supported; "
+                    "do not select the matching .pub file."
+                )
             os.replace(temp_path, EPC_SSH_KEY)
             os.chmod(EPC_SSH_KEY, 0o600)
         finally:
