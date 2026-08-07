@@ -2,5 +2,4 @@
 set -euo pipefail
 
 pcscd --foreground &
-exec gunicorn --bind 127.0.0.1:8099 --workers 2 --threads 4 server:app
-
+exec gunicorn --bind "${BIND_HOST:-0.0.0.0}:${PORT:-8099}" --workers 2 --threads 4 server:app

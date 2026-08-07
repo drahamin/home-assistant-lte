@@ -19,6 +19,6 @@ COPY app /app
 COPY run.sh /run.sh
 RUN chmod 0755 /run.sh
 RUN mkdir -p /data /config
-ENV PORT=8099 PYTHONUNBUFFERED=1
+ENV BIND_HOST=0.0.0.0 PORT=8099 PYTHONUNBUFFERED=1
 EXPOSE 8099
 CMD ["/run.sh"]

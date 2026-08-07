@@ -1,5 +1,5 @@
 name: Baiamonte LTE
-version: 0.1.0
+version: 0.1.1
 slug: lte_lab_manager
 description: Control Baiamonte's internal LTE EPC, Nokia eNodeB, UEs, and programmable test SIMs.
 startup: application
@@ -11,10 +11,14 @@ arch:
 image: ghcr.io/drahamin/home-assistant-lte
 ingress: true
 ingress_port: 8099
+ports:
+  8099/tcp: null
+ports_description:
+  8099/tcp: Optional direct web access port (Home Assistant ingress does not require it)
 panel_icon: mdi:radio-tower
 panel_title: LTE
 panel_admin: true
-host_network: true
+host_network: false
 usb: true
 udev: true
 homeassistant: 2026.4.0

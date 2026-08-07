@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1
+
+- Isolated the ingress service from the Home Assistant host network to prevent port 8099 conflicts.
+- Listen on the app container interface so Home Assistant ingress can reach the dashboard.
+- Added an optional, user-selectable external web port in Home Assistant's Network settings.
+
 ## 0.1.0
 
 - Initial Home Assistant ingress dashboard.
