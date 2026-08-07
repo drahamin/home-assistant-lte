@@ -84,6 +84,60 @@ class AppTests(unittest.TestCase):
         finally:
             self.server.settings = original
 
+    def test_opc_matches_3gpp_milenage_vector(self):
+        response = self.client.post("/api/sim/opc", json={
+            "k": "465B5CE8B199B49FAA5F0A2EE238A6BC",
+            "op": "CDC202D5123E20F62B6D676AC72CB318",
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["opc"], "CD63CB71954A9F4E48A5994E37A02BAF")
+        self.assertFalse(response.get_json()["stored"])
+
+    def test_secure_sim_values_have_valid_lengths(self):
+        data = self.client.post("/api/sim/test-values").get_json()
+        self.assertEqual(len(data["k"]), 32)
+        self.assertEqual(len(data["op"]), 32)
+        self.assertEqual(len(data["opc"]), 32)
+        self.assertFalse(data["stored"])
+
+    def test_routing_apply_requires_exact_confirmation(self):
+        original = self.server.settings
+        try:
+            self.server.settings = lambda: {
+                "epc_routing_management_enabled": True, "epc_host": "192.168.1.151",
+                "epc_ssh_user": "root", "epc_ssh_port": 22, "ue_subnet": "45.45.0.0/16",
+                "epc_uplink_interface": "eth0", "apn": "internet",
+            }
+            response = self.client.post("/api/epc-routing/apply", json={"confirm": "yes"})
+            self.assertEqual(response.status_code, 400)
+            self.assertIn("APPLY 192.168.1.151", response.get_json()["error"])
+        finally:
+            self.server.settings = original
+
+    def test_routing_script_is_scoped_and_reversible(self):
+        cfg = {"subnet": "45.45.0.0/16", "interface": "eth0"}
+        apply_script = self.server.routing_apply_script(cfg)
+        rollback_script = self.server.routing_rollback_script(cfg)
+        self.assertIn("Managed by Baiamonte LTE", apply_script)
+        self.assertIn("baiamonte-lte-routing.service", apply_script)
+        self.assertIn("previous_forwarding", rollback_script)
+        self.assertIn("45.45.0.0/16", rollback_script)
+
+    def test_routing_key_generator_returns_only_public_key(self):
+        original = self.server.settings
+        try:
+            self.server.settings = lambda: {
+                "epc_routing_management_enabled": True, "epc_host": "192.168.1.151",
+                "epc_ssh_user": "root", "epc_ssh_port": 22, "ue_subnet": "45.45.0.0/16",
+                "epc_uplink_interface": "eth0", "apn": "internet",
+            }
+            response = self.client.post("/api/epc-routing/key/generate", json={})
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.get_json()["public_key"].startswith("ssh-ed25519 "))
+            self.assertNotIn("PRIVATE", response.get_data(as_text=True))
+        finally:
+            self.server.settings = original
+
 
 if __name__ == "__main__":
     unittest.main()

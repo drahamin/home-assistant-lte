@@ -1,6 +1,6 @@
 # Baiamonte LTE
 
-A Home Assistant app (formerly called an add-on) for controlling Baiamonte’s internal LTE network. It provides a single admin-only page for EPC and Nokia eNodeB health, vineyard-zone device grouping, availability history, offline notifications, UE subscriber provisioning, commissioning-file intake, diagnostics, Internet-breakout checks, and guarded programmable-SIM preparation.
+A Home Assistant app (formerly called an add-on) for controlling Baiamonte’s internal LTE network. It provides a single admin-only page for EPC and Nokia eNodeB health, vineyard-zone device grouping, availability history, offline notifications, UE subscriber provisioning, guarded EPC Internet routing, commissioning-file intake, diagnostics, and programmable test-SIM preparation with Milenage OPc generation.
 
 Preconfigured defaults:
 

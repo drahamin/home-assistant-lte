@@ -38,7 +38,22 @@ On the EPC host, an administrator must:
 4. Persist those settings using the EPC operating system's supported firewall method.
 5. Attach a subscriber and open a public HTTPS site from that UE. This is the required end-to-end proof that subscriber Internet routing works.
 
-The Home Assistant app deliberately does not rewrite the firewall on the separate EPC server. Apply these changes directly on `192.168.1.151`, after confirming the correct subnet and uplink interface.
+### EPC Routing Assistant
+
+Version 0.4.0 can apply and verify these changes from **LTE → Network care → Configure routing on the EPC**. It is disabled by default.
+
+1. In the app Configuration, enable `epc_routing_management_enabled`.
+2. Confirm `epc_ssh_user`, `epc_ssh_port`, `ue_subnet`, and `epc_uplink_interface`, then restart the app.
+3. Select **Generate dedicated SSH key**, copy the displayed public key, and add it to the configured EPC user’s `authorized_keys` file. Alternatively, upload an existing unencrypted private key whose public key is already authorized. The account must be `root` or have passwordless `sudo` for the managed commands.
+4. Scan the EPC host fingerprint and compare it with the fingerprint shown locally on the EPC before selecting **Trust this fingerprint**.
+5. Review the plan, apply it, and run **Check current routing**.
+6. Start the live traffic test, turn off Wi-Fi on an attached LTE device, open a new public HTTPS site, and finish the test. The Overview Internet light turns green only when outbound, NAT, and established-return counters all increase.
+
+The assistant does not accept arbitrary commands or install packages. It creates only `baiamonte-lte-routing.service`, `/usr/local/sbin/baiamonte-lte-routing`, `/etc/sysctl.d/99-baiamonte-lte.conf`, and three exact iptables rules. Rollback removes those items and restores the forwarding value captured before the first apply. The EPC must use Linux with systemd and iptables.
+
+## SIM authentication utilities
+
+The SIM workbench calculates Milenage OPc from K and OP using `OPc = AES-128(K, OP) XOR OP`. It also generates cryptographically random K and OP values for owned programmable test SIMs. These values are returned to the browser only and are not written to the app database or activity log. Use **Use in profile** to copy K and OPc into the pySim worksheet without retyping them.
 
 ## Availability alerts
 
