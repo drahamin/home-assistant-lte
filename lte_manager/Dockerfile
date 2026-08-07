@@ -10,7 +10,7 @@ LABEL io.hass.version="${BUILD_VERSION}" \
 
 RUN apk add --no-cache bash ccid iputils pcsc-lite-libs pcsc-lite \
       pcsc-lite-dev gcc musl-dev swig \
-    && pip install --no-cache-dir pyscard==2.2.2 \
+    && pip install --no-cache-dir pyscard==2.3.1 \
     && apk del pcsc-lite-dev gcc musl-dev swig
 WORKDIR /app
 COPY requirements.txt /app/requirements.txt
