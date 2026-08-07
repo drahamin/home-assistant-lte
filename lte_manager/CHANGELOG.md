@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.2
+
+- Added a guarded, read-only EPC Console for system, LTE core, network, routing, and recent-log views.
+- Added an SSH connectivity test that distinguishes refused ports, timeouts/firewalls, non-SSH services, and working SSH servers.
+- Improved fingerprint-scan errors so the exact remediation remains visible in the interface.
+
 ## 0.4.1
 
 - Fixed EPC private-key uploads for standard extensionless filenames such as `id_ed25519`.

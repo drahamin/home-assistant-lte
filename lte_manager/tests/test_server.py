@@ -2,6 +2,7 @@ import importlib
 import io
 import os
 from pathlib import Path
+import socket
 import subprocess
 import tempfile
 import unittest
@@ -180,6 +181,45 @@ class AppTests(unittest.TestCase):
             self.assertIn("without .pub", response.get_json()["error"])
         finally:
             self.server.settings = original
+
+    def test_epc_connectivity_reports_timeout(self):
+        original = self.server.settings
+        try:
+            self.server.settings = lambda: {
+                "epc_routing_management_enabled": True, "epc_host": "192.168.1.151",
+                "epc_ssh_user": "root", "epc_ssh_port": 22, "ue_subnet": "45.45.0.0/16",
+                "epc_uplink_interface": "eth0", "apn": "internet",
+            }
+            with patch.object(self.server.socket, "create_connection", side_effect=socket.timeout):
+                response = self.client.post("/api/epc-routing/connectivity")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.get_json()["state"], "timeout")
+            self.assertIn("VLAN", response.get_json()["detail"])
+        finally:
+            self.server.settings = original
+
+    def test_epc_console_only_runs_allowlisted_tools(self):
+        original = self.server.settings
+        try:
+            self.server.settings = lambda: {
+                "epc_routing_management_enabled": True, "epc_host": "192.168.1.151",
+                "epc_ssh_user": "root", "epc_ssh_port": 22, "ue_subnet": "45.45.0.0/16",
+                "epc_uplink_interface": "eth0", "apn": "internet",
+            }
+            rejected = self.client.post("/api/epc-console/run", json={"action": "rm-everything"})
+            self.assertEqual(rejected.status_code, 400)
+            with patch.object(self.server, "run_epc_script", return_value=({"host": "192.168.1.151"}, "healthy")) as run:
+                accepted = self.client.post("/api/epc-console/run", json={"action": "system"})
+            self.assertEqual(accepted.status_code, 200)
+            self.assertEqual(accepted.get_json()["output"], "healthy")
+            self.assertIn("hostname", run.call_args.args[0])
+        finally:
+            self.server.settings = original
+
+    def test_epc_console_scripts_are_read_only(self):
+        scripts = "\n".join(action["script"] for action in self.server.EPC_CONSOLE_ACTIONS.values())
+        for destructive in ("rm ", "iptables -A", "iptables -D", "systemctl restart", "systemctl stop", "reboot"):
+            self.assertNotIn(destructive, scripts)
 
 
 if __name__ == "__main__":

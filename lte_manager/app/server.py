@@ -294,8 +294,41 @@ def require_routing_enabled():
     return cfg
 
 
+def probe_epc_ssh():
+    cfg = require_routing_enabled()
+    started = time.monotonic()
+    try:
+        with socket.create_connection((cfg["host"], cfg["port"]), timeout=4) as connection:
+            connection.settimeout(2)
+            try:
+                banner = connection.recv(255).decode("utf-8", errors="replace").strip()
+            except socket.timeout:
+                banner = ""
+        latency = round((time.monotonic() - started) * 1000)
+        if banner.startswith("SSH-"):
+            return {"reachable": True, "ssh": True, "state": "ssh_ready", "latency_ms": latency,
+                    "detail": f"SSH answered on {cfg['host']}:{cfg['port']} in {latency} ms",
+                    "banner": banner[:120]}
+        return {"reachable": True, "ssh": False, "state": "non_ssh", "latency_ms": latency,
+                "detail": f"Port {cfg['port']} is open, but it did not return an SSH banner",
+                "banner": banner[:120]}
+    except ConnectionRefusedError:
+        return {"reachable": False, "ssh": False, "state": "refused", "latency_ms": None,
+                "detail": f"Connection refused at {cfg['host']}:{cfg['port']}; no SSH service is listening there"}
+    except socket.timeout:
+        return {"reachable": False, "ssh": False, "state": "timeout", "latency_ms": None,
+                "detail": f"Connection to {cfg['host']}:{cfg['port']} timed out; check VLAN and firewall access"}
+    except OSError as exc:
+        detail = str(exc).strip() or "network error"
+        return {"reachable": False, "ssh": False, "state": "network_error", "latency_ms": None,
+                "detail": f"Cannot reach {cfg['host']}:{cfg['port']}: {detail[:200]}"}
+
+
 def scan_epc_host():
     cfg = require_routing_enabled()
+    probe = probe_epc_ssh()
+    if not probe["reachable"]:
+        raise ValueError(probe["detail"])
     result = subprocess.run(["ssh-keyscan", "-T", "5", "-p", str(cfg["port"]), cfg["host"]],
                             capture_output=True, text=True, timeout=8, check=False)
     key_lines = [line.strip() for line in result.stdout.splitlines() if line and not line.startswith("#")]
@@ -308,7 +341,9 @@ def scan_epc_host():
             if len(parts) >= 4:
                 fingerprints.append({"fingerprint": parts[1], "type": parts[-1].strip("()"), "key_line": line})
     if not fingerprints:
-        raise ValueError("No SSH host key was returned by the EPC")
+        if not probe["ssh"]:
+            raise ValueError(f"{probe['detail']}. Confirm that this is the EPC SSH port")
+        raise ValueError("SSH answered, but no compatible host key was returned; check the EPC SSH host-key configuration")
     return cfg, fingerprints
 
 
@@ -332,6 +367,55 @@ def run_epc_script(script, timeout=25):
         message = (result.stderr or result.stdout or "Remote command failed").strip().splitlines()[-1][:600]
         raise ValueError(f"EPC SSH operation failed: {message}")
     return cfg, result.stdout.strip()
+
+
+EPC_CONSOLE_ACTIONS = {
+    "system": {
+        "label": "System overview",
+        "script": """set -eu
+echo 'HOST'; hostname
+echo; echo 'SYSTEM'; uname -srmo
+echo; echo 'UPTIME'; uptime
+echo; echo 'MEMORY'; free -h
+echo; echo 'ROOT DISK'; df -h /
+echo; echo 'FAILED SERVICES'; systemctl --failed --no-pager 2>/dev/null || true
+""",
+    },
+    "core": {
+        "label": "LTE core services",
+        "script": """set -eu
+echo 'LTE CORE PROCESSES'
+ps -eo pid,etimes,comm,args --sort=comm | grep -E '[n]extepc|[o]pen5gs|[m]ongod' || echo 'No NextEPC/Open5GS/MongoDB processes found'
+echo; echo 'KNOWN SERVICE STATES'
+for service in nextepc-mmed nextepc-sgwd nextepc-pgwd nextepc-hssd open5gs-mmed open5gs-sgwcd open5gs-smfd open5gs-upfd mongod mongodb; do
+  state=$(systemctl is-active "$service" 2>/dev/null || true)
+  if [ "$state" != inactive ] && [ "$state" != unknown ]; then printf '%-24s %s\n' "$service" "$state"; fi
+done
+""",
+    },
+    "network": {
+        "label": "Interfaces & routes",
+        "script": """set -eu
+echo 'INTERFACES'; ip -brief address
+echo; echo 'ROUTES'; ip route
+echo; echo 'LISTENING TCP/UDP PORTS'; ss -lntup 2>/dev/null | head -n 120
+""",
+    },
+    "routing": {
+        "label": "Forwarding & firewall",
+        "script": """set -eu
+echo 'IPV4 FORWARDING'; sysctl net.ipv4.ip_forward
+echo; echo 'FORWARD CHAIN'; iptables -w 5 -nvL FORWARD 2>/dev/null || echo 'iptables FORWARD chain unavailable'
+echo; echo 'NAT POSTROUTING'; iptables -w 5 -t nat -nvL POSTROUTING 2>/dev/null || echo 'iptables NAT table unavailable'
+""",
+    },
+    "logs": {
+        "label": "Recent EPC logs",
+        "script": """set -eu
+journalctl --no-pager -n 160 -u nextepc-mmed -u nextepc-sgwd -u nextepc-pgwd -u nextepc-hssd -u open5gs-mmed -u open5gs-sgwcd -u open5gs-smfd -u open5gs-upfd 2>/dev/null || echo 'No matching systemd journal entries found'
+""",
+    },
+}
 
 
 def routing_check():
@@ -433,6 +517,41 @@ def epc_routing_status():
         cfg = routing_config()
         return jsonify({"config": cfg, "key_present": EPC_SSH_KEY.exists(), "host_trusted": EPC_KNOWN_HOSTS.exists()})
     except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/epc-routing/connectivity")
+def epc_routing_connectivity():
+    try:
+        cfg = require_routing_enabled()
+        return jsonify({"host": cfg["host"], "port": cfg["port"], **probe_epc_ssh()})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.get("/api/epc-console/actions")
+def epc_console_actions():
+    try:
+        require_routing_enabled()
+        return jsonify({"actions": [{"id": action_id, "label": action["label"]}
+                                    for action_id, action in EPC_CONSOLE_ACTIONS.items()]})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/epc-console/run")
+def epc_console_run():
+    try:
+        action_id = str((request.get_json(silent=True) or {}).get("action", ""))
+        action = EPC_CONSOLE_ACTIONS.get(action_id)
+        if not action:
+            raise ValueError("Choose one of the available read-only EPC console tools")
+        cfg, output = run_epc_script(action["script"], timeout=20)
+        output = output[-48_000:] if output else "Command completed with no output."
+        event("console", f"Ran read-only EPC console tool: {action['label']}")
+        return jsonify({"ok": True, "action": action_id, "label": action["label"],
+                        "host": cfg["host"], "output": output, "checked_at": int(time.time())})
+    except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
         return jsonify({"error": str(exc)}), 400
 
 
