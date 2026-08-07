@@ -1,0 +1,45 @@
+.panel > p.muted {
+  color: var(--ash);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+body,
+.shell,
+.shell > *,
+main,
+.page {
+  min-width: 0;
+}
+
+body {
+  overflow-x: hidden;
+}
+
+@media (max-width: 900px) {
+  aside,
+  nav,
+  .hero,
+  .hero > div {
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .hero h2,
+  .hero p {
+    overflow-wrap: anywhere;
+  }
+
+  .grid-two > *,
+  .cards > *,
+  .panel-title > * {
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .topology {
+    overflow-x: auto;
+  }
+}

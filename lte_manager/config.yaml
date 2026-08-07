@@ -1,0 +1,44 @@
+name: Baiamonte LTE
+version: "0.1.0"
+slug: lte_lab_manager
+description: Control Baiamonte's internal LTE EPC, Nokia eNodeB, UEs, and programmable test SIMs.
+startup: application
+boot: auto
+init: false
+arch:
+  - amd64
+  - aarch64
+  - armv7
+image: ghcr.io/drahamin/home-assistant-lte
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:radio-tower
+panel_title: LTE
+panel_admin: true
+host_network: true
+usb: true
+udev: true
+homeassistant: 2026.4.0
+map:
+  - type: addon_config
+    read_only: false
+options:
+  epc_host: 192.168.1.151
+  bts_host: 192.168.1.100
+  epc_type: nextepc
+  mongodb_uri: mongodb://192.168.1.151:27017/nextepc
+  apn: internet
+  mcc: "001"
+  mnc: "01"
+  tac: 1
+  sim_programming_enabled: false
+schema:
+  epc_host: str
+  bts_host: str
+  epc_type: list(nextepc|open5gs|local)
+  mongodb_uri: str
+  apn: str
+  mcc: str
+  mnc: str
+  tac: int
+  sim_programming_enabled: bool

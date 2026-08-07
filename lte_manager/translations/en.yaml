@@ -1,0 +1,25 @@
+configuration:
+  epc_host:
+    name: EPC address
+    description: Address of the NextEPC or Open5GS server.
+  bts_host:
+    name: Nokia eNodeB address
+    description: Management address configured in the FLF21 commissioning file.
+  epc_type:
+    name: EPC type
+    description: Subscriber database format to use, or local for preview and planning.
+  mongodb_uri:
+    name: Subscriber database URI
+    description: MongoDB URI used by NextEPC/Open5GS. Keep this network private.
+  apn:
+    name: Default APN
+  mcc:
+    name: MCC
+  mnc:
+    name: MNC
+  tac:
+    name: Tracking area code
+  sim_programming_enabled:
+    name: Enable physical SIM writes
+    description: Requires a compatible PC/SC reader and pySim-shell. Writes still require confirmation.
+
