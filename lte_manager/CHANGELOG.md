@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2
+
+- Added custom Baiamonte LTE icon and store logo artwork for Home Assistant.
+
 ## 0.1.1
 
 - Isolated the ingress service from the Home Assistant host network to prevent port 8099 conflicts.
