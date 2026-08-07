@@ -17,53 +17,68 @@
     <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l2.5-6 4 12 2.5-6h5"/></symbol>
     <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M18.2 9A7 7 0 0 0 6.4 6.4L4 9M5.8 15A7 7 0 0 0 17.6 17.6L20 15"/></symbol>
     <symbol id="i-server" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01"/></symbol>
+    <symbol id="i-leaf" viewBox="0 0 24 24"><path d="M20 4C11 4 5 8.7 5 15c0 2.8 2.2 5 5 5 6.3 0 10-7 10-16Z"/><path d="M4 21c2.8-5.2 7-8.5 12.5-11"/></symbol>
+    <symbol id="i-route" viewBox="0 0 24 24"><circle cx="5" cy="18" r="2"/><circle cx="19" cy="6" r="2"/><path d="M7 18h3a3 3 0 0 0 3-3V9a3 3 0 0 1 3-3h1"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
   </defs></svg>
   <div class="shell">
     <aside>
-      <div class="brand"><span class="brandmark"><svg><use href="#i-mountain"></use></svg></span><div><strong>Baiamonte LTE</strong><small>Internal operations</small></div></div>
+      <div class="brand"><span class="brandmark"><img src="static/brand-icon.png" alt=""></span><div><strong>Baiamonte LTE</strong><small>Vineyard operations</small></div></div>
       <nav>
         <button class="nav active" data-page="overview"><svg><use href="#i-grid"></use></svg>Overview</button>
-        <button class="nav" data-page="ues"><svg><use href="#i-phone"></use></svg>UEs</button>
-        <button class="nav" data-page="bts"><svg><use href="#i-tower"></use></svg>Base station</button>
-        <button class="nav" data-page="sim"><svg><use href="#i-sim"></use></svg>SIM programmer</button>
-        <button class="nav" data-page="diagnostics"><svg><use href="#i-activity"></use></svg>Diagnostics</button>
+        <button class="nav" data-page="ues"><svg><use href="#i-phone"></use></svg>Devices</button>
+        <button class="nav" data-page="bts"><svg><use href="#i-tower"></use></svg>Radio site</button>
+        <button class="nav" data-page="sim"><svg><use href="#i-sim"></use></svg>SIM workbench</button>
+        <button class="nav" data-page="diagnostics"><svg><use href="#i-activity"></use></svg>Network care</button>
       </nav>
-      <div class="lab-note"><span class="pulse"></span><div><b>Internal network</b><small>{{ config.mcc }}-{{ config.mnc }} · TAC {{ config.tac }}</small></div></div>
+      <div class="lab-note"><span class="pulse"></span><div><b>Estate network</b><small>{{ config.mcc }}-{{ config.mnc }} · TAC {{ config.tac }}</small></div></div>
     </aside>
     <main>
-      <header><div><p class="eyebrow">BAIAMONTE · PRIVATE MOBILE NETWORK</p><h1 id="page-title">Network overview</h1></div><button class="refresh" id="refresh"><svg><use href="#i-refresh"></use></svg><span>Refresh</span></button></header>
+      <header><div><p class="eyebrow">TENUTA BAIAMONTE · PRIVATE ESTATE NETWORK</p><h1 id="page-title">Vineyard network</h1></div><div class="header-tools"><span class="last-check" id="last-checked">Not checked yet</span><button class="refresh" id="refresh"><svg><use href="#i-refresh"></use></svg><span>Refresh</span></button></div></header>
 
       <section class="page active" id="overview">
-        <div class="hero">
-          <div><span class="hero-label">INTERNAL LTE CORE</span><h2>Quiet control. Clear signal.</h2><p>Live oversight of Baiamonte’s private EPC, Nokia radio, and connected devices.</p></div>
-          <div class="hero-radio"><i></i><i></i><i></i><b>LTE</b></div>
+        <div class="hero vineyard-hero">
+          <div class="hero-copy"><span class="hero-label">VINEYARD OPERATIONS · PRIVATE LTE</span><h2>Connected from cellar to vines.</h2><p>One calm view of the estate core, estate radio, and every trusted field device.</p><div class="hero-state"><span class="pulse" id="hero-pulse"></span><b id="estate-health">Checking the estate network…</b></div></div>
+          <div class="estate-emblem"><img src="static/brand-icon.png" alt="Baiamonte vineyard and LTE tower emblem"></div>
+        </div>
+        <div class="operations-strip" aria-label="Estate network summary">
+          <div><small>ESTATE STATUS</small><b id="estate-status">Checking</b></div>
+          <div><small>PRIVATE PLMN</small><b>{{ config.mcc }}–{{ config.mnc }}</b></div>
+          <div><small>TRACKING AREA</small><b>TAC {{ config.tac }}</b></div>
+          <div><small>RADIO PATH</small><b>eNodeB → EPC</b></div>
+        </div>
+        <div class="quick-actions" aria-label="Common operations">
+          <button data-action="add-ue"><span><svg><use href="#i-plus"></use></svg></span><div><b>Add estate device</b><small>Provision a trusted UE</small></div></button>
+          <button data-action="diagnostics"><span><svg><use href="#i-activity"></use></svg></span><div><b>Check the network</b><small>Run the safe pre-flight</small></div></button>
+          <button data-action="bts"><span><svg><use href="#i-tower"></use></svg></span><div><b>Service the radio</b><small>Open Nokia site controls</small></div></button>
+          <button data-action="sim"><span><svg><use href="#i-sim"></use></svg></span><div><b>Prepare a SIM</b><small>Open the card workbench</small></div></button>
         </div>
         <div class="cards">
-          <article class="status-card"><div class="card-top"><span class="icon cyan"><svg><use href="#i-server"></use></svg></span><span class="badge" id="epc-badge">Checking</span></div><p>EPC / MME</p><h3>{{ config.epc_host }}</h3><div class="metric"><span>S1AP · 36412</span><b id="s1-status">—</b></div><div class="metric"><span>Subscriber DB</span><b id="db-status">—</b></div></article>
-          <article class="status-card"><div class="card-top"><span class="icon violet"><svg><use href="#i-tower"></use></svg></span><span class="badge" id="bts-badge">Checking</span></div><p>NOKIA ENODEB</p><h3>{{ config.bts_host }}</h3><div class="metric"><span>Software</span><b>FLF21</b></div><div class="metric"><span>S1 target</span><b>{{ config.epc_host }}</b></div></article>
-          <article class="status-card"><div class="card-top"><span class="icon amber"><svg><use href="#i-phone"></use></svg></span><span class="badge neutral">Local index</span></div><p>PROVISIONED UEs</p><h3><span id="ue-count">—</span> devices</h3><div class="metric"><span>Default APN</span><b>{{ config.apn }}</b></div><button class="text-button" data-go="ues">Manage subscribers →</button></article>
+          <article class="status-card"><div class="card-top"><span class="icon cyan"><svg><use href="#i-server"></use></svg></span><span class="badge" id="epc-badge">Checking</span></div><p>ESTATE CORE · EPC / MME</p><h3>{{ config.epc_host }}</h3><div class="metric"><span>S1 control path</span><b id="s1-status">—</b></div><div class="metric"><span>Device registry</span><b id="db-status">—</b></div></article>
+          <article class="status-card"><div class="card-top"><span class="icon violet"><svg><use href="#i-tower"></use></svg></span><span class="badge" id="bts-badge">Checking</span></div><p>ESTATE RADIO · NOKIA</p><h3>{{ config.bts_host }}</h3><div class="metric"><span>Radio software</span><b>FLF21</b></div><div class="metric"><span>Core destination</span><b>{{ config.epc_host }}</b></div></article>
+          <article class="status-card"><div class="card-top"><span class="icon amber"><svg><use href="#i-phone"></use></svg></span><span class="badge neutral">Trusted list</span></div><p>ESTATE DEVICES · UEs</p><h3><span id="ue-count">—</span> devices</h3><div class="metric"><span>Estate APN</span><b>{{ config.apn }}</b></div><button class="text-button" data-go="ues">Manage estate devices →</button></article>
         </div>
-        <div class="grid-two"><article class="panel"><div class="panel-title"><div><p>CONNECTION PATH</p><h3>Radio to packet core</h3></div></div><div class="topology"><div class="node"><span>UE</span><small>Test SIM</small></div><div class="line"><i></i><small>Uu</small></div><div class="node tower"><span>eNB</span><small>.100</small></div><div class="line"><i></i><small>S1</small></div><div class="node"><span>EPC</span><small>.151</small></div></div></article><article class="panel"><div class="panel-title"><div><p>RECENT ACTIVITY</p><h3>Internal network events</h3></div></div><div id="events" class="events"><div class="empty">No events yet</div></div></article></div>
+        <div class="grid-two"><article class="panel"><div class="panel-title"><div><p>ESTATE SIGNAL ROUTE</p><h3>Field device to private core</h3></div><span class="route-icon"><svg><use href="#i-route"></use></svg></span></div><div class="topology"><div class="node"><span>Device</span><small>Estate SIM</small></div><div class="line"><i></i><small>Radio</small></div><div class="node tower"><span>eNB</span><small>.100</small></div><div class="line"><i></i><small>S1</small></div><div class="node"><span>EPC</span><small>.151</small></div></div></article><article class="panel"><div class="panel-title"><div><p>OPERATIONS JOURNAL</p><h3>Recent estate activity</h3></div></div><div id="events" class="events"><div class="empty">No events yet</div></div></article></div>
       </section>
 
       <section class="page" id="ues">
-        <div class="section-head"><div><p>SUBSCRIBER REGISTRY</p><h2>UEs</h2><span>Add a test device to the HSS and open its profile here.</span></div><button class="primary" id="add-ue">+ Add UE</button></div>
+        <div class="section-head"><div><p>TRUSTED DEVICE REGISTRY</p><h2>Estate devices</h2><span>Provision phones, sensors, and field equipment on the private network.</span></div><button class="primary" id="add-ue">+ Add device</button></div>
         <article class="panel table-panel"><table><thead><tr><th>Name</th><th>IMSI</th><th>APN</th><th>MSISDN</th><th></th></tr></thead><tbody id="ue-rows"></tbody></table><div id="ue-empty" class="empty large">No UEs provisioned yet.</div></article>
       </section>
 
       <section class="page" id="bts">
-        <div class="section-head"><div><p>RADIO ACCESS NETWORK</p><h2>Nokia eNodeB</h2><span>FLF21 at {{ config.bts_host }}</span></div><span class="badge neutral">Site Manager required</span></div>
-        <div class="grid-two"><article class="panel checklist"><p>PRE-FLIGHT</p><h3>Physical connections</h3><label><input type="checkbox"> MAIN antenna on MAIN port</label><label><input type="checkbox"> Diversity antenna on DIV port</label><label><input type="checkbox"> GPS antenna attached and locked</label><label><input type="checkbox"> Power and Ethernet connected</label><label><input type="checkbox"> Authorized band and RF power confirmed</label></article><article class="panel"><p>COMMISSIONING BACKUP</p><h3>Import privately</h3><p class="muted">Stored in the app’s backed-up private configuration. It is never added to this Git repository.</p><form id="commission-form"><label class="drop"><input type="file" name="file" accept=".xml,.raml"><b>Choose Nokia commissioning file</b><span>XML or RAML backup</span></label><button class="primary full">Store commissioning file</button></form><div id="commission-result"></div></article></div>
+        <div class="section-head"><div><p>ESTATE RADIO ACCESS</p><h2>Nokia radio site</h2><span>FLF21 at {{ config.bts_host }}</span></div><span class="badge neutral">Site Manager required</span></div>
+        <div class="grid-two"><article class="panel checklist"><p>OPENING ROUTINE</p><h3>Physical connections</h3><label><input type="checkbox"> MAIN antenna on MAIN port</label><label><input type="checkbox"> Diversity antenna on DIV port</label><label><input type="checkbox"> GPS antenna attached and locked</label><label><input type="checkbox"> Power and Ethernet connected</label><label><input type="checkbox"> Authorized band and RF power confirmed</label></article><article class="panel"><p>COMMISSIONING BACKUP</p><h3>Import privately</h3><p class="muted">Stored in the app’s backed-up private configuration. It is never added to this Git repository.</p><form id="commission-form"><label class="drop"><input type="file" name="file" accept=".xml,.raml"><b>Choose Nokia commissioning file</b><span>XML or RAML backup</span></label><button class="primary full">Store commissioning file</button></form><div id="commission-result"></div></article></div>
         <article class="panel config-strip"><div><small>eNodeB</small><b>{{ config.bts_host }}</b></div><span>→</span><div><small>S1AP / SCTP</small><b>36412</b></div><span>→</span><div><small>MME / EPC</small><b>{{ config.epc_host }}</b></div></article>
       </section>
 
       <section class="page" id="sim">
-        <div class="section-head"><div><p>SMART CARD WORKBENCH</p><h2>SIM programmer</h2><span>Prepare a test-SIM profile and verify reader readiness.</span></div><span class="badge" id="sim-ready">Checking</span></div>
+        <div class="section-head"><div><p>SMART CARD WORKBENCH</p><h2>SIM workbench</h2><span>Prepare an estate test-SIM profile and verify reader readiness.</span></div><span class="badge" id="sim-ready">Checking</span></div>
         <div class="grid-two"><article class="panel"><p>READER STATUS</p><h3>PC/SC + pySim</h3><div class="readiness" id="reader-details"></div><div class="warning">Physical writes are disabled by default. Use only programmable test SIMs you own.</div></article><article class="panel"><p>PROFILE WORKSHEET</p><h3>Generate pySim review file</h3><form id="sim-form" class="compact-form"></form><button class="primary full" id="generate-script">Generate worksheet</button></article></div>
       </section>
 
       <section class="page" id="diagnostics">
-        <div class="section-head"><div><p>OBSERVABILITY & RECOVERY</p><h2>Logs and troubleshooting</h2><span>Run safe network checks, inspect activity, and analyze core logs.</span></div><div class="button-row"><a class="secondary link-button" href="api/support-bundle">Download support bundle</a><button class="primary" id="run-diagnostics">Run diagnostics</button></div></div>
+        <div class="section-head"><div><p>OBSERVABILITY & RECOVERY</p><h2>Network care</h2><span>Run safe checks, inspect estate activity, and analyze core logs.</span></div><div class="button-row"><a class="secondary link-button" href="api/support-bundle">Download support bundle</a><button class="primary" id="run-diagnostics">Run diagnostics</button></div></div>
         <div class="grid-two diagnostics-grid"><article class="panel"><div class="panel-title"><div><p>ONE-CLICK CHECKS</p><h3>Network and configuration</h3></div><span class="badge neutral" id="diagnostic-summary">Not run</span></div><div id="diagnostic-results" class="diagnostic-results"><div class="empty">Run diagnostics to test the current path.</div></div></article><article class="panel"><p>EPC LOG ANALYZER</p><h3>NextEPC / Open5GS</h3><p class="muted">Upload a copied MME, SGW, or PGW log. Analysis happens inside the app and the file is not retained.</p><form id="log-analyze-form"><label class="drop"><input type="file" name="file" accept=".log,.txt"><b>Choose a core log</b><span>Maximum 2 MB</span></label><button class="secondary full">Analyze log</button></form><div id="log-findings"></div></article></div>
         <article class="panel log-panel"><div class="panel-title"><div><p>LIVE APP LOG</p><h3>Baiamonte LTE activity</h3></div><div class="button-row"><label class="follow"><input type="checkbox" id="follow-logs" checked> Follow</label><button class="secondary small" id="clear-log-view">Clear view</button></div></div><div class="terminal" id="live-log"><div class="log-line muted-line">Waiting for activity…</div></div></article>
         <article class="panel tips"><p>ATTACH TROUBLESHOOTING ORDER</p><div><b>1</b><span>Confirm EPC and eNodeB IP reachability</span><b>2</b><span>Confirm S1 setup and matching MCC/MNC/TAC</span><b>3</b><span>Confirm IMSI, K, OPc and AMF</span><b>4</b><span>Confirm APN, GTP-U route, forwarding and NAT</span></div></article>
@@ -71,7 +86,7 @@
     </main>
   </div>
 
-  <dialog id="ue-dialog"><form method="dialog" class="dialog-card"><div class="dialog-head"><div><p>SUBSCRIBER PROFILE</p><h2>Add UE</h2></div><button value="cancel" class="close">×</button></div><div id="ue-form" class="form-grid"></div><div class="dialog-actions"><button value="cancel" class="secondary">Cancel</button><button type="button" class="primary" id="save-ue">Provision UE</button></div><div id="form-error" class="form-error"></div></form></dialog>
+  <dialog id="ue-dialog"><form method="dialog" class="dialog-card"><div class="dialog-head"><div><p>TRUSTED DEVICE PROFILE</p><h2>Add estate device</h2></div><button value="cancel" class="close">×</button></div><div id="ue-form" class="form-grid"></div><div class="dialog-actions"><button value="cancel" class="secondary">Cancel</button><button type="button" class="primary" id="save-ue">Provision device</button></div><div id="form-error" class="form-error"></div></form></dialog>
   <div id="toast"></div>
   <script>window.LTE_CONFIG={{ config|tojson }};</script>
   <script src="static/app.js"></script>

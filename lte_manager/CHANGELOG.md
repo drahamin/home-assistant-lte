@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0
+
+- Reworked the dashboard as a vineyard-operations console with estate-focused language and branding.
+- Added one-click shortcuts for device provisioning, network checks, radio service, and SIM preparation.
+- Added an estate health summary, last-check time, persistent page navigation, and saved BTS pre-flight checks.
+- Improved the responsive navigation for smoother use inside the Home Assistant mobile app.
+
 ## 0.1.2
 
 - Added custom Baiamonte LTE icon and store logo artwork for Home Assistant.
