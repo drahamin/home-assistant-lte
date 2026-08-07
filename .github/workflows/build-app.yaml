@@ -11,13 +11,18 @@ jobs:
     outputs:
       architectures: ${{ steps.info.outputs.architectures }}
       matrix: ${{ steps.matrix.outputs.matrix }}
-      version: ${{ steps.info.outputs.version }}
+      version: ${{ steps.normalize.outputs.version }}
     steps:
       - uses: actions/checkout@v7.0.1
       - id: info
         uses: home-assistant/actions/helpers/info@master
         with:
           path: ./lte_manager
+      - id: normalize
+        name: Normalize app version
+        run: |
+          version=${{ steps.info.outputs.version }}
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
       - id: matrix
         uses: home-assistant/builder/actions/prepare-multi-arch-matrix@2026.06.0
         with:
