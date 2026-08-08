@@ -1,0 +1,191 @@
+/* Shared Baiamonte operations design language: AIS, ADS-B, and LTE. */
+:root {
+  --black: #050505;
+  --charcoal: #17130f;
+  --ink: #302c27;
+  --muted: #7d7469;
+  --ash: #7d7469;
+  --paper: #faf6f0;
+  --ivory: #fff;
+  --white: #fff;
+  --line: #e5dbcd;
+  --gold: #d4af37;
+  --brown: #8b4513;
+  --wine: #8b4513;
+  --wine-dark: #6d3510;
+  --olive: #6f8252;
+  --vine: #6f8252;
+  --vine-dark: #566a3d;
+  --green: #6f8252;
+  --red: #b7544d;
+  --terracotta: #b7544d;
+  --volcano: #050505;
+  --shadow: 0 18px 50px rgba(16, 20, 24, .09);
+  --sans: "Avenir Next", Futura, "Century Gothic", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --serif: var(--sans);
+}
+
+html, body { background: var(--paper); font-family: var(--sans); }
+button, input, select, textarea { font: inherit; }
+.shell { grid-template-columns: 245px minmax(0, 1fr); }
+
+aside {
+  padding: 28px 20px;
+  border: 0;
+  color: #fff;
+  background:
+    radial-gradient(circle at 85% 10%, rgba(212,175,55,.13), transparent 31%),
+    linear-gradient(180deg, #070605 0%, #15110d 100%);
+  box-shadow: 10px 0 30px rgba(13,10,7,.08);
+}
+.brand { gap: 13px; padding: 0 7px 28px; border-bottom: 1px solid rgba(255,255,255,.1); }
+.brandmark { width: 46px; height: 46px; border-radius: 14px; border: 1px solid rgba(212,175,55,.36); box-shadow: 0 9px 24px rgba(0,0,0,.34); overflow: hidden; }
+.brandmark img { border-radius: 13px; mix-blend-mode: normal; }
+.brand strong { color: #fff; font-family: var(--sans); font-size: 16px; font-weight: 720; letter-spacing: -.01em; }
+.brand small { margin-top: 4px; color: rgba(255,255,255,.55); font-size: 9px; letter-spacing: .12em; text-transform: uppercase; }
+nav { gap: 8px; padding-top: 25px; }
+.nav { min-height: 43px; gap: 12px; padding: 11px 13px; border-radius: 12px; color: rgba(255,255,255,.66); font-size: 11px; font-weight: 650; }
+.nav svg { width: 18px; height: 18px; }
+.nav:hover { color: #fff; background: rgba(255,255,255,.07); transform: none; }
+.nav.active { color: #fff; background: rgba(212,175,55,.15); box-shadow: inset 3px 0 var(--gold); }
+.lab-note { left: 20px; right: 20px; bottom: 26px; padding: 13px; border: 1px solid rgba(255,255,255,.1); border-radius: 14px; background: rgba(255,255,255,.055); }
+.lab-note b { color: #fff; font-family: var(--sans); }
+
+main { width: auto; max-width: none; margin: 0; padding: 0 34px 44px; }
+header { height: 104px; margin: 0; }
+.eyebrow, .section-head p, .panel > p, .panel-title p, .status-card > p { color: #8c8172; font-family: var(--sans); font-size: 9px; font-weight: 760; letter-spacing: .15em; }
+h1, h2, h3, h4 { font-family: var(--sans); }
+h1 { margin-top: 6px; font-size: 25px; font-weight: 760; letter-spacing: -.025em; }
+h2 { font-size: 27px; font-weight: 750; letter-spacing: -.025em; }
+.refresh, .primary, .secondary, .danger-button { border-radius: 11px; font-weight: 680; }
+.refresh { padding: 10px 13px; background: #fff; box-shadow: 0 8px 22px rgba(24,20,15,.06); }
+.primary { border-color: var(--brown); background: var(--brown); }
+.primary:hover { background: var(--wine-dark); }
+
+.vineyard-hero {
+  min-height: 244px;
+  padding: 40px 47px;
+  border-radius: 23px;
+  background:
+    radial-gradient(circle at 82% 34%, rgba(212,175,55,.18), transparent 27%),
+    linear-gradient(122deg, #070605 0%, #18120c 62%, #2b1d0f 100%);
+  box-shadow: 0 22px 55px rgba(22,16,10,.15);
+}
+.vineyard-hero::before { width: 55%; height: 100%; right: 0; bottom: 0; border: 0; border-radius: 0; transform: none; background: linear-gradient(135deg, transparent 15%, rgba(212,175,55,.04)); }
+.vineyard-hero::after { display: none; }
+.hero h2 { max-width: 710px; margin: 11px 0 13px; font-size: clamp(34px, 4vw, 46px); font-weight: 760; line-height: 1.08; }
+.hero p { max-width: 680px; color: rgba(255,255,255,.68); font-size: 13px; line-height: 1.6; }
+.hero-state { margin-top: 22px; font-size: 11px; }
+.estate-emblem { width: 166px; height: 166px; padding: 9px; border: 1px solid rgba(212,175,55,.26); border-radius: 42px; background: rgba(255,255,255,.055); }
+.estate-emblem img { border-radius: 33px; mix-blend-mode: normal; }
+
+.operations-strip { margin: 18px 0 0; border-radius: 17px; background: #fff; box-shadow: var(--shadow); }
+.operations-strip > div { padding: 18px 20px; }
+.operations-strip b { font-family: var(--sans); font-size: 14px; }
+.status-lights { gap: 12px; margin-top: 14px; }
+.status-lights > div { padding: 12px 14px; border-radius: 13px; background: #fff; }
+.status-lights span b { font-family: var(--sans); }
+.quick-actions { gap: 14px; margin: 18px 0; }
+.quick-actions button { padding: 15px; border-radius: 15px; background: #fff; }
+.quick-actions button > span { border-radius: 11px; }
+.quick-actions button b { font-family: var(--sans); }
+
+.cards, .grid-two, .insights-grid { gap: 18px; }
+.status-card, .panel { border-radius: 17px; border-color: var(--line); background: #fff; box-shadow: var(--shadow); }
+.status-card { padding: 23px; }
+.status-card::before { display: none; }
+.status-card h3 { font-size: 22px; }
+.route-icon, .icon { border-radius: 11px; }
+.insights-grid { margin: 18px 0; }
+.grid-two { margin-top: 18px; }
+.section-head { margin: 8px 0 24px; }
+.section-head > div > span { color: var(--muted); line-height: 1.55; }
+.history-chart, .routing-assistant, .routing-columns section, .epc-console-panel pre, .drop { border-radius: 13px; }
+.alert-numbers select, .zone-select, .role-select, .form-grid input, .form-grid select, .form-grid textarea, .inventory-toolbar input, .inventory-toolbar select { border: 1px solid var(--line); border-radius: 10px; color: var(--ink); background: #fff; }
+
+.inventory-toolbar { display: grid; grid-template-columns: minmax(250px, 1fr) minmax(210px, .4fr) auto; gap: 12px; align-items: end; margin: -6px 0 14px; padding: 15px; border: 1px solid var(--line); border-radius: 17px; background: #fff; box-shadow: 0 10px 30px rgba(16,20,24,.05); }
+.inventory-toolbar label > span { display: block; margin: 0 0 6px 2px; color: var(--muted); font-size: 8px; font-weight: 750; letter-spacing: .11em; text-transform: uppercase; }
+.inventory-toolbar input, .inventory-toolbar select { width: 100%; min-height: 42px; padding: 9px 11px; }
+.inventory-toolbar .link-button { min-height: 42px; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; }
+.zone-summary { margin: 0 0 14px; }
+.table-panel table { min-width: 1060px; }
+.table-panel td { vertical-align: middle; }
+.table-panel td:first-child { min-width: 180px; }
+.device-note { display: block; max-width: 260px; margin-top: 4px; color: var(--muted); font-size: 9px; line-height: 1.35; }
+.role-select { min-width: 165px; padding: 9px; font-size: 10px; }
+.critical-toggle { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; white-space: nowrap; }
+.critical-toggle input { position: absolute; opacity: 0; pointer-events: none; }
+.critical-toggle i { width: 31px; height: 18px; position: relative; border-radius: 999px; background: #c8c1b7; transition: .2s; }
+.critical-toggle i::after { content: ""; width: 12px; height: 12px; position: absolute; left: 3px; top: 3px; border-radius: 50%; background: #fff; transition: .2s; box-shadow: 0 1px 3px rgba(0,0,0,.18); }
+.critical-toggle input:checked + i { background: var(--red); }
+.critical-toggle input:checked + i::after { transform: translateX(13px); }
+.critical-toggle span { color: var(--muted); font-size: 9px; }
+.critical-toggle input:checked ~ span { color: #8a3d37; font-weight: 700; }
+.deployment-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 18px; }
+.deployment-grid article { display: flex; gap: 13px; padding: 18px; border: 1px solid var(--line); border-radius: 17px; background: #fff; box-shadow: 0 10px 30px rgba(16,20,24,.045); }
+.deployment-grid b { font-size: 13px; }
+.deployment-grid p { margin: 6px 0 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
+
+.form-grid .field { min-width: 0; }
+.form-grid .field label, .critical-field > span { display: block; margin-bottom: 6px; color: var(--muted); font-size: 8px; font-weight: 750; letter-spacing: .1em; }
+.form-grid input, .form-grid select, .form-grid textarea { width: 100%; padding: 10px 11px; }
+.form-grid textarea { min-height: 76px; resize: vertical; }
+.critical-field { position: relative; align-self: stretch; padding: 10px 12px; border: 1px solid var(--line); border-radius: 11px; background: #faf8f4; }
+.critical-field input { position: absolute; opacity: 0; }
+.critical-field i { display: inline-block; width: 34px; height: 20px; position: relative; vertical-align: middle; border-radius: 999px; background: #cbc4b9; }
+.critical-field i::after { content: ""; width: 14px; height: 14px; position: absolute; top: 3px; left: 3px; border-radius: 50%; background: #fff; transition: .2s; }
+.critical-field input:checked + i { background: var(--red); }
+.critical-field input:checked + i::after { transform: translateX(14px); }
+.critical-field small { margin-left: 6px; color: var(--muted); font-size: 9px; }
+
+@media (max-width: 1120px) {
+  main { padding: 0 26px 42px; }
+  .estate-emblem { width: 145px; height: 145px; }
+  .deployment-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 900px) {
+  .shell { display: block; }
+  aside { position: relative; left: auto; right: auto; top: auto; bottom: auto; height: auto; padding: 15px 16px; box-shadow: 0 8px 26px rgba(13,10,7,.12); }
+  aside .brand { display: flex; padding: 0 0 14px; }
+  aside .lab-note { display: none; }
+  .brandmark { width: 39px; height: 39px; border-radius: 11px; }
+  .brandmark img { border-radius: 10px; }
+  nav { display: flex; gap: 6px; padding-top: 12px; overflow-x: auto; scrollbar-width: none; }
+  nav::-webkit-scrollbar { display: none; }
+  .nav { display: flex; min-width: max-content; min-height: 37px; padding: 9px 10px; font-size: 9px; }
+  .nav.active { box-shadow: inset 0 -2px var(--gold); }
+  main { padding: 0 16px 34px; }
+  header { height: 86px; }
+  .last-check { display: none; }
+  .vineyard-hero { min-height: 230px; padding: 32px 28px; }
+  .estate-emblem { width: 112px; height: 112px; border-radius: 30px; }
+  .estate-emblem img { border-radius: 23px; }
+  .operations-strip { grid-template-columns: 1fr 1fr; margin-top: 14px; }
+  .operations-strip > div:nth-child(2) { border-right: 0; }
+  .operations-strip > div:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+  .inventory-toolbar { grid-template-columns: 1fr 1fr; }
+  .inventory-toolbar .link-button { grid-column: 1 / -1; }
+}
+
+@media (max-width: 620px) {
+  header { height: 78px; }
+  h1 { font-size: 21px; }
+  .eyebrow { font-size: 7px; }
+  .refresh span { display: none; }
+  .vineyard-hero { min-height: 310px; padding: 28px 24px; align-items: flex-start; }
+  .hero h2 { font-size: 33px; }
+  .estate-emblem { position: absolute; right: 22px; bottom: 22px; width: 82px; height: 82px; padding: 6px; border-radius: 23px; opacity: .72; }
+  .estate-emblem img { border-radius: 17px; }
+  .operations-strip, .status-lights, .quick-actions, .inventory-toolbar { grid-template-columns: 1fr; }
+  .operations-strip > div { border-right: 0; border-bottom: 1px solid var(--line); }
+  .operations-strip > div:last-child { border-bottom: 0; }
+  .quick-actions { gap: 9px; }
+  .inventory-toolbar .link-button { grid-column: auto; }
+  .section-head { align-items: flex-start; gap: 16px; }
+  .section-head .primary { width: 100%; }
+  .form-grid { grid-template-columns: 1fr; }
+  .field.wide { grid-column: auto; }
+  .dialog-card { padding: 22px 17px; }
+  #ues th:nth-child(3), #ues td:nth-child(3), #ues th:nth-child(4), #ues td:nth-child(4) { display: table-cell; }
+}

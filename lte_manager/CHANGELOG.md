@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.3
+
+- Aligned LTE with the Baiamonte AIS and ADS-B visual system across desktop and mobile Home Assistant views.
+- Added camera and vineyard-IoT roles, critical-device marking, operations notes, search, and role filtering.
+- Added camera, field-IoT, and critical-asset counts to the Overview page.
+- Added a redacted inventory export that excludes SIM authentication keys and OPc values.
+- Added practical deployment guidance for cameras, field sensors, controls, and gateways.
+
 ## 0.4.2
 
 - Added a guarded, read-only EPC Console for system, LTE core, network, routing, and recent-log views.
