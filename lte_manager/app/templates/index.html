@@ -3,9 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#080706">
   <title>Baiamonte LTE</title>
+  <link rel="icon" href="static/brand-icon.png">
   <link rel="stylesheet" href="static/app.css">
   <link rel="stylesheet" href="static/polish.css">
+  <link rel="stylesheet" href="static/suite.css">
 </head>
 <body>
   <svg class="svg-sprite" aria-hidden="true"><defs>
@@ -24,13 +27,15 @@
     <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></symbol>
     <symbol id="i-zone" viewBox="0 0 24 24"><path d="M12 21s7-5.4 7-12A7 7 0 1 0 5 9c0 6.6 7 12 7 12Z"/><circle cx="12" cy="9" r="2"/></symbol>
     <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 20 6v5c0 5.2-3.4 8.4-8 10-4.6-1.6-8-4.8-8-10V6Z"/><path d="m9 12 2 2 4-5"/></symbol>
+    <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 7h3l1.5-2h7L17 7h3a2 2 0 0 1 2 2v9H2V9a2 2 0 0 1 2-2Z"/><circle cx="12" cy="12.5" r="3.5"/></symbol>
+    <symbol id="i-sensor" viewBox="0 0 24 24"><path d="M12 4v16M8 8a6 6 0 0 0 0 8M16 8a6 6 0 0 1 0 8M5 5a10 10 0 0 0 0 14M19 5a10 10 0 0 1 0 14"/><circle cx="12" cy="12" r="2"/></symbol>
   </defs></svg>
   <div class="shell">
     <aside>
       <div class="brand"><span class="brandmark"><img src="static/brand-icon.png" alt=""></span><div><strong>Baiamonte LTE</strong><small>Vineyard operations</small></div></div>
       <nav>
         <button class="nav active" data-page="overview"><svg><use href="#i-grid"></use></svg>Overview</button>
-        <button class="nav" data-page="ues"><svg><use href="#i-phone"></use></svg>Devices</button>
+        <button class="nav" data-page="ues"><svg><use href="#i-camera"></use></svg>Devices</button>
         <button class="nav" data-page="bts"><svg><use href="#i-tower"></use></svg>Radio site</button>
         <button class="nav" data-page="sim"><svg><use href="#i-sim"></use></svg>SIM workbench</button>
         <button class="nav" data-page="diagnostics"><svg><use href="#i-activity"></use></svg>Network care</button>
@@ -42,14 +47,14 @@
 
       <section class="page active" id="overview">
         <div class="hero vineyard-hero">
-          <div class="hero-copy"><span class="hero-label">VINEYARD OPERATIONS · PRIVATE LTE</span><h2>Connected from cellar to vines.</h2><p>One calm view of the estate core, estate radio, and every trusted field device.</p><div class="hero-state"><span class="pulse" id="hero-pulse"></span><b id="estate-health">Checking the estate network…</b></div></div>
+          <div class="hero-copy"><span class="hero-label">VINEYARD OPERATIONS · PRIVATE LTE</span><h2>Every camera and field device, connected.</h2><p>One clear view of estate cameras, vineyard sensors, the LTE core, and the radio network that keeps them online.</p><div class="hero-state"><span class="pulse" id="hero-pulse"></span><b id="estate-health">Checking the estate network…</b></div></div>
           <div class="estate-emblem"><img src="static/brand-icon.png" alt="Baiamonte vineyard and LTE tower emblem"></div>
         </div>
         <div class="operations-strip" aria-label="Estate network summary">
           <div><small>ESTATE STATUS</small><b id="estate-status">Checking</b></div>
-          <div><small>PRIVATE PLMN</small><b>{{ config.mcc }}–{{ config.mnc }}</b></div>
-          <div><small>TRACKING AREA</small><b>TAC {{ config.tac }}</b></div>
-          <div><small>RADIO PATH</small><b>eNodeB → EPC</b></div>
+          <div><small>CAMERAS</small><b><span id="camera-count">—</span> managed</b></div>
+          <div><small>FIELD IOT</small><b><span id="iot-count">—</span> managed</b></div>
+          <div><small>CRITICAL ASSETS</small><b><span id="critical-count">—</span> watched</b></div>
         </div>
         <div class="status-lights" aria-label="Live estate status lights"><div><i id="light-epc"></i><span><small>EPC CORE</small><b id="light-epc-label">Checking</b></span></div><div><i id="light-s1"></i><span><small>S1 LINK</small><b id="light-s1-label">Checking</b></span></div><div><i id="light-radio"></i><span><small>NOKIA RADIO</small><b id="light-radio-label">Checking</b></span></div><div><i id="light-internet" class="unknown"></i><span><small>UE INTERNET</small><b id="light-internet-label">Not verified</b></span></div></div>
         <div class="quick-actions" aria-label="Common operations">
@@ -71,9 +76,19 @@
       </section>
 
       <section class="page" id="ues">
-        <div class="section-head"><div><p>TRUSTED DEVICE REGISTRY</p><h2>Trusted estate devices</h2><span>Provision phones, sensors, and field equipment on the private network.</span></div><button class="primary" id="add-ue">+ Add device</button></div>
+        <div class="section-head"><div><p>CAMERA &amp; IOT REGISTRY</p><h2>Estate device inventory</h2><span>Organize cameras, sensors, irrigation controls, gateways, and security equipment by vineyard zone.</span></div><button class="primary" id="add-ue">+ Add device</button></div>
+        <div class="inventory-toolbar">
+          <label class="inventory-search"><span>Search inventory</span><input id="device-search" type="search" placeholder="Name, IMSI, zone, or notes"></label>
+          <label><span>Device role</span><select id="device-type-filter"><option>All roles</option><option>Camera</option><option>Environmental sensor</option><option>Irrigation controller</option><option>Gateway / router</option><option>Security device</option><option>Vehicle / equipment</option><option>Other IoT</option></select></label>
+          <a class="secondary link-button" href="api/subscribers/export.csv">Export safe inventory</a>
+        </div>
         <div id="zone-summary" class="zone-summary" aria-label="Device zones"></div>
-        <article class="panel table-panel"><table><thead><tr><th>Name</th><th>Vineyard zone</th><th>IMSI</th><th>APN</th><th>MSISDN</th><th></th></tr></thead><tbody id="ue-rows"></tbody></table><div id="ue-empty" class="empty large">No estate devices provisioned yet.</div></article>
+        <article class="panel table-panel"><table><thead><tr><th>Device</th><th>Role</th><th>Vineyard zone</th><th>Critical</th><th>IMSI</th><th>APN</th><th></th></tr></thead><tbody id="ue-rows"></tbody></table><div id="ue-empty" class="empty large">No estate devices provisioned yet.</div></article>
+        <div class="deployment-grid" aria-label="Vineyard device guidance">
+          <article><span class="route-icon"><svg><use href="#i-camera"></use></svg></span><div><b>Cameras</b><p>Mark perimeter and safety cameras critical. Use a fixed IP or local recorder and monitor the full video path—not only LTE attachment.</p></div></article>
+          <article><span class="route-icon"><svg><use href="#i-sensor"></use></svg></span><div><b>Field sensors</b><p>Group weather, soil, and tank sensors by block. Record the physical location and expected reporting interval in notes.</p></div></article>
+          <article><span class="route-icon"><svg><use href="#i-route"></use></svg></span><div><b>Controls &amp; gateways</b><p>Give irrigation, gate, and aggregation equipment clear names. Keep control interfaces private and permit only required outbound traffic.</p></div></article>
+        </div>
       </section>
 
       <section class="page" id="bts">

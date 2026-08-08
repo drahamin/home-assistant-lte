@@ -2,11 +2,23 @@ const $=(s,r=document)=>r.querySelector(s);
 const $$=(s,r=document)=>[...r.querySelectorAll(s)];
 const api=p=>new URL(p.replace(/^\//,''),document.baseURI).toString();
 const baseZones=['North Vineyard','South Vineyard','Cellar','Winery','Estate Gate','Guest House','Unassigned'];
-const fields=[['name','DEVICE NAME','Field sensor'],['zone','VINEYARD ZONE','North Vineyard'],['imsi','IMSI','001010000000001'],['k','K · 32 HEX',''],['opc','OPc · 32 HEX',''],['amf','AMF · 4 HEX','8000'],['apn','APN',window.LTE_CONFIG.apn],['msisdn','MSISDN · OPTIONAL','']];
+const deviceTypes=['Camera','Environmental sensor','Irrigation controller','Gateway / router','Security device','Vehicle / equipment','Other IoT'];
+const securityFields=[['imsi','IMSI','001010000000001'],['k','K · 32 HEX',''],['opc','OPc · 32 HEX',''],['amf','AMF · 4 HEX','8000'],['apn','APN',window.LTE_CONFIG.apn],['msisdn','MSISDN · OPTIONAL','']];
 let subscribers=[];
 let activeZone='All zones';
+let activeType='All roles';
+let deviceSearch='';
 
-function fieldMarkup(compact=false){return fields.filter(x=>!compact||['name','imsi','k','opc','amf','apn'].includes(x[0])).map(([n,l,p],i)=>`<div class="field ${i>5?'wide':''}"><label>${l}</label><input name="${n}" placeholder="${p}" value="${['amf','apn'].includes(n)?p:''}" ${n==='zone'?'list="estate-zones"':''} ${['k','opc'].includes(n)?'type="password" autocomplete="off"':''}></div>`).join('')}
+function secureFieldsMarkup(compact=false){return securityFields.filter(([name])=>!compact||name!=='msisdn').map(([name,label,placeholder])=>`<div class="field"><label>${label}</label><input name="${name}" placeholder="${placeholder}" value="${['amf','apn'].includes(name)?placeholder:''}" ${['k','opc'].includes(name)?'type="password" autocomplete="off"':''}></div>`).join('')}
+function fieldMarkup(compact=false){
+  if(compact)return `<div class="field"><label>DEVICE NAME</label><input name="name" placeholder="North gate camera"></div>${secureFieldsMarkup(true)}`;
+  return `<div class="field"><label>DEVICE NAME</label><input name="name" placeholder="North gate camera"></div>
+    <div class="field"><label>DEVICE ROLE</label><select name="device_type">${deviceTypes.map(type=>`<option ${type==='Other IoT'?'selected':''}>${type}</option>`).join('')}</select></div>
+    <div class="field"><label>VINEYARD ZONE</label><input name="zone" placeholder="North Vineyard" list="estate-zones"></div>
+    <label class="field critical-field"><span>CRITICAL ASSET</span><input type="checkbox" name="critical"><i></i><small>Highlight this device for daily operations</small></label>
+    <div class="field wide"><label>OPERATIONS NOTES</label><textarea name="notes" maxlength="160" placeholder="Location, purpose, expected reporting interval, or recorder"></textarea></div>
+    ${secureFieldsMarkup()}`;
+}
 $('#ue-form').innerHTML=fieldMarkup();
 $('#sim-form').innerHTML=fieldMarkup(true);
 
@@ -28,6 +40,9 @@ async function refresh(){
     $('#s1-status').textContent=d.epc.s1.online?`${d.epc.s1.latency_ms} ms`:'Closed';
     $('#db-status').textContent=d.epc.database.online?'Reachable':'Unavailable';
     $('#ue-count').textContent=d.subscriber_count;
+    $('#camera-count').textContent=d.inventory?.cameras??0;
+    $('#iot-count').textContent=d.inventory?.iot??0;
+    $('#critical-count').textContent=d.inventory?.critical??0;
     const healthy=d.epc.online&&d.bts.online,partial=d.epc.online||d.bts.online;
     $('#estate-status').textContent=healthy?'Ready':partial?'Needs attention':'Action needed';
     $('#estate-status').className=healthy?'good':partial?'warn':'bad';
@@ -43,18 +58,26 @@ async function refresh(){
 }
 
 function zoneOptions(current){return [...new Set([current,...baseZones,...subscribers.map(row=>row.zone)])].filter(Boolean).map(zone=>`<option ${zone===current?'selected':''}>${escapeHtml(zone)}</option>`).join('')}
+function roleOptions(current){return deviceTypes.map(type=>`<option ${type===current?'selected':''}>${type}</option>`).join('')}
 function renderSubscribers(){
-  const visible=activeZone==='All zones'?subscribers:subscribers.filter(row=>row.zone===activeZone);
+  const query=deviceSearch.trim().toLowerCase();
+  const visible=subscribers.filter(row=>(activeZone==='All zones'||row.zone===activeZone)&&(activeType==='All roles'||row.device_type===activeType)&&(!query||[row.name,row.imsi,row.zone,row.device_type,row.notes].some(value=>String(value||'').toLowerCase().includes(query))));
   const counts=subscribers.reduce((map,row)=>(map[row.zone]=(map[row.zone]||0)+1,map),{});
   $('#zone-summary').innerHTML=[['All zones',subscribers.length],...Object.entries(counts).sort()].map(([zone,count])=>`<button class="zone-chip ${zone===activeZone?'active':''}" data-zone-filter="${escapeHtml(zone)}"><svg><use href="#i-zone"></use></svg><span>${escapeHtml(zone)}</span><b>${count}</b></button>`).join('');
-  $('#ue-rows').innerHTML=visible.map(row=>`<tr><td><b>${escapeHtml(row.name)}</b></td><td><select class="zone-select" data-zone-imsi="${row.imsi}">${zoneOptions(row.zone)}</select></td><td>${row.imsi}</td><td>${escapeHtml(row.apn)}</td><td>${escapeHtml(row.msisdn||'—')}</td><td><button data-delete="${row.imsi}" title="Remove">Remove</button></td></tr>`).join('');
+  $('#ue-rows').innerHTML=visible.map(row=>`<tr><td><b>${escapeHtml(row.name)}</b>${row.notes?`<small class="device-note">${escapeHtml(row.notes)}</small>`:''}</td><td><select class="role-select" data-profile-imsi="${row.imsi}">${roleOptions(row.device_type)}</select></td><td><select class="zone-select" data-zone-imsi="${row.imsi}">${zoneOptions(row.zone)}</select></td><td><label class="critical-toggle" title="Mark as operationally critical"><input type="checkbox" data-critical-imsi="${row.imsi}" ${row.critical?'checked':''}><i></i><span>${row.critical?'Critical':'Standard'}</span></label></td><td>${row.imsi}</td><td>${escapeHtml(row.apn)}</td><td><button data-delete="${row.imsi}" title="Remove">Remove</button></td></tr>`).join('');
   $('#ue-empty').style.display=visible.length?'none':'block';
-  $('#ue-empty').textContent=subscribers.length?'No devices in this zone.':'No estate devices provisioned yet.';
+  $('#ue-empty').textContent=subscribers.length?'No devices match these filters.':'No estate devices provisioned yet.';
   $$('[data-zone-filter]').forEach(button=>button.onclick=()=>{activeZone=button.dataset.zoneFilter;renderSubscribers()});
   $$('[data-zone-imsi]').forEach(select=>select.onchange=async()=>{try{await jsonFetch(`api/subscribers/${select.dataset.zoneImsi}/zone`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({zone:select.value})});toast('Vineyard zone updated');await loadUEs()}catch(e){toast(e.message)}});
+  $$('[data-profile-imsi]').forEach(select=>select.onchange=async()=>{try{await updateProfile(select.dataset.profileImsi,{device_type:select.value});toast('Device role updated');await loadUEs()}catch(e){toast(e.message)}});
+  $$('[data-critical-imsi]').forEach(input=>input.onchange=async()=>{try{await updateProfile(input.dataset.criticalImsi,{critical:input.checked});toast(input.checked?'Critical device highlighted':'Critical flag removed');await loadUEs()}catch(e){toast(e.message)}});
   $$('[data-delete]').forEach(button=>button.onclick=async()=>{if(!confirm(`Remove UE ${button.dataset.delete} from the EPC?`))return;try{await jsonFetch(`api/subscribers/${button.dataset.delete}`,{method:'DELETE'});toast('UE removed');refresh()}catch(e){toast(e.message)}});
 }
+function updateProfile(imsi,body){return jsonFetch(`api/subscribers/${imsi}/profile`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})}
 async function loadUEs(){subscribers=await jsonFetch('api/subscribers');renderSubscribers()}
+
+$('#device-search').oninput=event=>{deviceSearch=event.target.value;renderSubscribers()};
+$('#device-type-filter').onchange=event=>{activeType=event.target.value;renderSubscribers()};
 
 function currentHistoryHours(){return Number($('.range-picker .active')?.dataset.hours||24)}
 function historyPath(points,key,onlineY,offlineY,width){

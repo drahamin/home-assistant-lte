@@ -47,15 +47,39 @@ class AppTests(unittest.TestCase):
         original = self.server.settings
         try:
             self.server.settings = lambda: {"epc_type": "local", "apn": "internet", "mcc": "001", "mnc": "01", "tac": 1, "sim_programming_enabled": False}
-            profile = {"imsi": "001010000000001", "name": "Test UE", "zone": "Cellar", "k": "A" * 32, "opc": "B" * 32, "amf": "8000", "apn": "internet", "msisdn": ""}
+            profile = {"imsi": "001010000000001", "name": "North Cellar Camera", "zone": "Cellar", "device_type": "Camera", "critical": True, "notes": "Recorder bay 2", "k": "A" * 32, "opc": "B" * 32, "amf": "8000", "apn": "internet", "msisdn": ""}
             self.assertEqual(self.client.post("/api/subscribers", json=profile).status_code, 201)
             rows = self.client.get("/api/subscribers").get_json()
             self.assertEqual(rows[0]["zone"], "Cellar")
+            self.assertEqual(rows[0]["device_type"], "Camera")
+            self.assertTrue(rows[0]["critical"])
+            self.assertEqual(rows[0]["notes"], "Recorder bay 2")
             changed = self.client.patch("/api/subscribers/001010000000001/zone", json={"zone": "North Vineyard"})
             self.assertEqual(changed.status_code, 200)
             self.assertEqual(self.client.get("/api/subscribers").get_json()[0]["zone"], "North Vineyard")
+            changed = self.client.patch("/api/subscribers/001010000000001/profile", json={"device_type": "Environmental sensor", "critical": False})
+            self.assertEqual(changed.status_code, 200)
+            changed_row = self.client.get("/api/subscribers").get_json()[0]
+            self.assertEqual(changed_row["device_type"], "Environmental sensor")
+            self.assertFalse(changed_row["critical"])
+            export = self.client.get("/api/subscribers/export.csv")
+            self.assertEqual(export.status_code, 200)
+            self.assertIn("North Cellar Camera", export.get_data(as_text=True))
+            self.assertNotIn("A" * 32, export.get_data(as_text=True))
+            self.assertNotIn("B" * 32, export.get_data(as_text=True))
         finally:
             self.server.settings = original
+
+    def test_subscriber_rejects_unknown_device_role(self):
+        profile = {"imsi": "001010000000009", "name": "Unknown", "device_type": "Telephone", "k": "A" * 32, "opc": "B" * 32, "amf": "8000", "apn": "internet"}
+        response = self.client.post("/api/subscribers", json=profile)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("device role", response.get_json()["error"])
+
+    def test_interface_loads_shared_suite_styles(self):
+        page = self.client.get("/").get_data(as_text=True)
+        self.assertIn("static/suite.css", page)
+        self.assertIn("Estate device inventory", page)
 
     def test_history_returns_uptime(self):
         with self.server.db() as conn:

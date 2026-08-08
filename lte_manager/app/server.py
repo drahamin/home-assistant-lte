@@ -1,3 +1,5 @@
+import csv
+import io
 import json
 import ipaddress
 import os
@@ -63,6 +65,12 @@ def db():
     columns = {row[1] for row in conn.execute("PRAGMA table_info(subscribers)")}
     if "zone" not in columns:
         conn.execute("ALTER TABLE subscribers ADD COLUMN zone TEXT NOT NULL DEFAULT 'Unassigned'")
+    if "device_type" not in columns:
+        conn.execute("ALTER TABLE subscribers ADD COLUMN device_type TEXT NOT NULL DEFAULT 'Other IoT'")
+    if "critical" not in columns:
+        conn.execute("ALTER TABLE subscribers ADD COLUMN critical INTEGER NOT NULL DEFAULT 0")
+    if "notes" not in columns:
+        conn.execute("ALTER TABLE subscribers ADD COLUMN notes TEXT NOT NULL DEFAULT ''")
     conn.execute("""CREATE TABLE IF NOT EXISTS status_history (
         sampled_at INTEGER PRIMARY KEY, epc_online INTEGER NOT NULL, bts_online INTEGER NOT NULL,
         s1_online INTEGER NOT NULL, db_online INTEGER NOT NULL
@@ -790,6 +798,13 @@ def calculate_opc(k, op):
 def validate_subscriber(body):
     values = {k: str(body.get(k, "")).strip() for k in ("imsi", "name", "k", "opc", "amf", "apn", "msisdn", "zone")}
     values["zone"] = values["zone"][:40] or "Unassigned"
+    allowed_types = {"Camera", "Environmental sensor", "Irrigation controller", "Gateway / router",
+                     "Security device", "Vehicle / equipment", "Other IoT"}
+    values["device_type"] = str(body.get("device_type", "Other IoT")).strip()
+    if values["device_type"] not in allowed_types:
+        raise ValueError("Choose a supported vineyard device role")
+    values["critical"] = bool(body.get("critical", False))
+    values["notes"] = str(body.get("notes", "")).strip()[:160]
     values["k"], values["opc"], values["amf"] = values["k"].upper(), values["opc"].upper(), values["amf"].upper()
     if not IMSI_RE.fullmatch(values["imsi"]):
         raise ValueError("IMSI must contain 5–15 digits")
@@ -849,6 +864,7 @@ def overview():
         events = [dict(row) for row in conn.execute("SELECT * FROM events ORDER BY id DESC LIMIT 8")]
         route_row = conn.execute("SELECT value FROM app_settings WHERE key='routing_last_status'").fetchone()
         verified_row = conn.execute("SELECT value FROM app_settings WHERE key='routing_last_verified'").fetchone()
+        inventory_rows = conn.execute("SELECT device_type,critical FROM subscribers").fetchall()
     routing = {"configured": None, "verified": None}
     try:
         if route_row:
@@ -857,15 +873,19 @@ def overview():
             routing["verified"] = bool(json.loads(verified_row["value"]).get("verified"))
     except (json.JSONDecodeError, TypeError):
         pass
+    inventory = {"cameras": sum(row["device_type"] == "Camera" for row in inventory_rows),
+                 "iot": sum(row["device_type"] != "Camera" for row in inventory_rows),
+                 "critical": sum(bool(row["critical"]) for row in inventory_rows)}
     return jsonify({"epc": status["epc"], "bts": status["bts"],
                     "routing": routing, "subscriber_count": ue_count, "events": events,
+                    "inventory": inventory,
                     "config": {k: v for k, v in cfg.items() if k != "mongodb_uri"}})
 
 
 @app.get("/api/subscribers")
 def list_subscribers():
     with db() as conn:
-        rows = conn.execute("SELECT imsi,name,zone,apn,msisdn,created_at FROM subscribers ORDER BY zone,name").fetchall()
+        rows = conn.execute("SELECT imsi,name,zone,device_type,critical,notes,apn,msisdn,created_at FROM subscribers ORDER BY zone,name").fetchall()
     return jsonify([dict(r) for r in rows])
 
 
@@ -875,8 +895,9 @@ def create_subscriber():
         sub = validate_subscriber(request.get_json(silent=True) or {})
         result = provision_mongo(sub)
         with db() as conn:
-            conn.execute("INSERT OR REPLACE INTO subscribers(imsi,name,k,opc,amf,apn,msisdn,zone,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
-                         (sub["imsi"], sub["name"], sub["k"], sub["opc"], sub["amf"], sub["apn"], sub["msisdn"], sub["zone"], int(time.time())))
+            conn.execute("INSERT OR REPLACE INTO subscribers(imsi,name,k,opc,amf,apn,msisdn,zone,device_type,critical,notes,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (sub["imsi"], sub["name"], sub["k"], sub["opc"], sub["amf"], sub["apn"], sub["msisdn"],
+                          sub["zone"], sub["device_type"], int(sub["critical"]), sub["notes"], int(time.time())))
         event("subscriber", f"{sub['name']} ({sub['imsi']}) — {result}")
         return jsonify({"ok": True, "message": result}), 201
     except (ValueError, PyMongoError) as exc:
@@ -912,6 +933,59 @@ def change_subscriber_zone(imsi):
         conn.execute("UPDATE subscribers SET zone=? WHERE imsi=?", (zone, imsi))
     event("subscriber", f"Moved UE {imsi} to {zone}")
     return jsonify({"ok": True, "zone": zone})
+
+
+@app.patch("/api/subscribers/<imsi>/profile")
+def change_subscriber_profile(imsi):
+    if not IMSI_RE.fullmatch(imsi):
+        return jsonify({"error": "Invalid IMSI"}), 400
+    body = request.get_json(silent=True) or {}
+    allowed_types = {"Camera", "Environmental sensor", "Irrigation controller", "Gateway / router",
+                     "Security device", "Vehicle / equipment", "Other IoT"}
+    updates, values = [], []
+    if "device_type" in body:
+        device_type = str(body["device_type"]).strip()
+        if device_type not in allowed_types:
+            return jsonify({"error": "Choose a supported vineyard device role"}), 400
+        updates.append("device_type=?")
+        values.append(device_type)
+    if "critical" in body:
+        updates.append("critical=?")
+        values.append(int(bool(body["critical"])))
+    if "zone" in body:
+        updates.append("zone=?")
+        values.append(str(body["zone"]).strip()[:40] or "Unassigned")
+    if "notes" in body:
+        updates.append("notes=?")
+        values.append(str(body["notes"]).strip()[:160])
+    if not updates:
+        return jsonify({"error": "No supported inventory fields were supplied"}), 400
+    with db() as conn:
+        if not conn.execute("SELECT 1 FROM subscribers WHERE imsi=?", (imsi,)).fetchone():
+            return jsonify({"error": "Device not found"}), 404
+        conn.execute(f"UPDATE subscribers SET {','.join(updates)} WHERE imsi=?", (*values, imsi))
+    event("subscriber", f"Updated inventory profile for UE {imsi}")
+    return jsonify({"ok": True})
+
+
+@app.get("/api/subscribers/export.csv")
+def export_subscriber_inventory():
+    with db() as conn:
+        rows = conn.execute("SELECT name,device_type,zone,critical,imsi,apn,msisdn,notes,created_at FROM subscribers ORDER BY zone,name").fetchall()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Device", "Role", "Vineyard zone", "Critical", "IMSI", "APN", "MSISDN", "Notes", "Added"])
+    def safe_cell(value):
+        value = str(value or "")
+        return f"'{value}" if value.startswith(("=", "+", "-", "@")) else value
+    for row in rows:
+        writer.writerow([safe_cell(row["name"]), safe_cell(row["device_type"]), safe_cell(row["zone"]),
+                         "Yes" if row["critical"] else "No", row["imsi"], safe_cell(row["apn"]),
+                         safe_cell(row["msisdn"]), safe_cell(row["notes"]),
+                         time.strftime("%Y-%m-%d", time.localtime(row["created_at"]))])
+    return app.response_class(output.getvalue(), mimetype="text/csv",
+                              headers={"Content-Disposition": "attachment; filename=baiamonte-lte-inventory.csv",
+                                       "X-Content-Type-Options": "nosniff"})
 
 
 @app.get("/api/history")
