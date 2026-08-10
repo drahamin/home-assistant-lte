@@ -15,6 +15,12 @@ Set the EPC and Nokia eNodeB addresses in the add-on configuration before first 
 
 Connect the MAIN antenna to MAIN and the diversity antenna to DIV before enabling RF. Connect the GPS antenna and confirm a valid GPS lock in licensed Nokia BTS Site Manager. Import the supplied commissioning backup on the BTS page; the app stores it privately with mode `0600` but does not impersonate or automate Nokia Site Manager.
 
+The Radio Site page presents these connections as non-interactive inspection cards. It does not use checkboxes or claim to detect cable presence; confirm the hardware physically and use Nokia alarms or BTS Site Manager for electronic status.
+
+The commissioning backup identifies **HTTPS OAM through Nokia BTS Site Manager/WebEM** as the available management route: OAM TLS is forced, while the service-account SSH interface is disabled and no SNMP management configuration is present. The Radio Site poll therefore performs safe, read-only ICMP, HTTPS/TLS, HTTP, SSH-port, and EPC S1-listener checks. It displays the radio certificate SHA-256 fingerprint for identity comparison, but does not automatically trust the certificate or attempt to sign in. Live GPS lock, RF state, temperature, alarms, and Nokia operational counters still require the licensed Nokia management software or a vendor-supported export/API.
+
+Radio Operations includes shortcuts to open or copy the Nokia HTTPS management address, inspect the Home Assistant app container's route to the radio, and download the current safe diagnostic snapshot. These tools do not enable RF, change the commissioning profile, bypass the Nokia login, or accept arbitrary network commands.
+
 In Site Manager, verify:
 
 - eNodeB management address: the address configured for your estate radio

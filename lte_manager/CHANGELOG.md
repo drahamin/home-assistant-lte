@@ -5,6 +5,10 @@
 - Added a light/dark appearance control to the app header.
 - Uses the device color-scheme preference on first visit and remembers an explicit choice in that browser.
 - Added a vineyard-toned dark palette across gauges, panels, forms, tables, charts, dialogs, tools, and mobile navigation.
+- Replaced Nokia physical-connection checkboxes with non-interactive MAIN, DIV, GPS, power/Ethernet, and authorized-RF inspection cards.
+- Added safe, read-only Nokia polling for radio reachability, HTTPS/TLS identity, management ports, and the EPC S1 listener.
+- Added a private commissioning summary that identifies HTTPS OAM / Nokia BTS Site Manager as the intended access method while making disabled SSH and absent SNMP configuration explicit.
+- Added Radio Site tools to open or copy the supported Nokia HTTPS address, inspect the container route to the radio, and download a safe status snapshot.
 
 ## 0.5.1
 
