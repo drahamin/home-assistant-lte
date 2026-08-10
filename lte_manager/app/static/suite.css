@@ -150,6 +150,10 @@ h2 { font-size: 27px; font-weight: 750; letter-spacing: -.025em; }
 .alert-numbers select, .zone-select, .role-select, .form-grid input, .form-grid select, .form-grid textarea, .inventory-toolbar input, .inventory-toolbar select { border: 1px solid var(--line); border-radius: 10px; color: var(--ink); background: #fff; }
 
 .inventory-toolbar { display: grid; grid-template-columns: minmax(250px, 1fr) minmax(210px, .4fr) auto; gap: 12px; align-items: end; margin: -6px 0 14px; padding: 15px; border: 1px solid var(--line); border-radius: 17px; background: #fff; box-shadow: 0 10px 30px rgba(16,20,24,.05); }
+.pending-panel { margin-bottom: 18px; }.pending-registrations { display: grid; gap: 8px; margin-top: 15px; }
+.pending-registration { display: grid; grid-template-columns: 10px minmax(0,1fr) auto; gap: 12px; align-items: center; padding: 13px 14px; border: 1px solid rgba(183,84,77,.22); border-radius: 13px; background: rgba(183,84,77,.045); }.pending-registration > i { width: 9px; height: 9px; border-radius: 50%; background: var(--red); box-shadow: 0 0 0 4px rgba(183,84,77,.1); }.pending-registration small,.pending-registration b,.pending-registration span,.pending-registration em { display: block; }.pending-registration small { color: var(--red); font-size: 7px; font-weight: 800; letter-spacing: .1em; }.pending-registration b { margin-top: 3px; font-size: 12px; }.pending-registration span { margin-top: 4px; color: var(--muted); font-size: 9px; }.pending-registration em { margin-top: 4px; color: var(--muted); font-size: 7px; font-style: normal; }.pending-actions { display: flex; gap: 6px; }
+.approval-context { margin-top: 12px; padding: 13px; border-left: 3px solid var(--gold); border-radius: 9px; background: rgba(212,175,55,.07); }.approval-context b,.approval-context span,.approval-context small { display: block; }.approval-context b { font-size: 10px; }.approval-context span { margin-top: 4px; font-size: 9px; }.approval-context small { margin-top: 6px; color: var(--muted); font-size: 8px; line-height: 1.45; }
+.troubleshooting-pending-panel { margin: 18px 0; }.pending-troubleshooting-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 14px 0 7px; padding: 10px 12px; border-radius: 11px; background: rgba(111,130,82,.08); }.pending-troubleshooting-head b { font-size: 10px; }
 .inventory-toolbar label > span { display: block; margin: 0 0 6px 2px; color: var(--muted); font-size: 8px; font-weight: 750; letter-spacing: .11em; text-transform: uppercase; }
 .inventory-toolbar input, .inventory-toolbar select { width: 100%; min-height: 42px; padding: 9px 11px; }
 .inventory-toolbar .link-button { min-height: 42px; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; }
@@ -225,6 +229,7 @@ html[data-theme="dark"] body { background: radial-gradient(circle at 85% 0,rgba(
 html[data-theme="dark"] header,html[data-theme="dark"] main { color: var(--ink); }
 html[data-theme="dark"] .refresh,html[data-theme="dark"] .theme-toggle,html[data-theme="dark"] .secondary,html[data-theme="dark"] .operations-strip,html[data-theme="dark"] .network-health-board,html[data-theme="dark"] .quick-actions button,html[data-theme="dark"] .status-card,html[data-theme="dark"] .panel,html[data-theme="dark"] .inventory-toolbar,html[data-theme="dark"] .deployment-grid article,html[data-theme="dark"] .tool-output,html[data-theme="dark"] .routing-columns section { color: var(--ink); background: #171512; }
 html[data-theme="dark"] .subscriber-gauge,html[data-theme="dark"] .next-action,html[data-theme="dark"] .traffic-evidence > div,html[data-theme="dark"] .tool-button,html[data-theme="dark"] .tool-result-block,html[data-theme="dark"] .communications-notes,html[data-theme="dark"] .critical-field,html[data-theme="dark"] .check,html[data-theme="dark"] .drop,html[data-theme="dark"] .breakout-step,html[data-theme="dark"] .fingerprint,html[data-theme="dark"] .opc-result,html[data-theme="dark"] .checklist label,html[data-theme="dark"] .hardware-connection { color: var(--ink); background: #1d1a16; border-color: var(--line); }
+html[data-theme="dark"] .pending-registration { color: var(--ink); border-color: rgba(221,116,107,.28); background: rgba(221,116,107,.07); }html[data-theme="dark"] .approval-context,html[data-theme="dark"] .pending-troubleshooting-head { background: rgba(212,175,55,.08); }
 html[data-theme="dark"] .bts-poll-card,html[data-theme="dark"] .bts-config-context > div { color: var(--ink); border-color: var(--line); background: #1d1a16; }html[data-theme="dark"] .bts-config-context { background: var(--line); }html[data-theme="dark"] .bts-access-result { border-color: rgba(145,165,111,.28); background: rgba(145,165,111,.1); }
 html[data-theme="dark"] .gauge-dial { background: conic-gradient(from -90deg,var(--gauge-color) 0 calc(var(--gauge-value) * 1%),#39332c 0 100%); }
 html[data-theme="dark"] .gauge-dial::before { background: #14120f; }
@@ -286,6 +291,7 @@ html[data-theme="dark"] #toast { color: #dff0d7; border-color: #526546; backgrou
   .operations-strip > div:nth-child(2) { border-right: 0; }
   .operations-strip > div:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
   .inventory-toolbar { grid-template-columns: 1fr 1fr; }
+  .pending-registration { grid-template-columns: 10px minmax(0,1fr); }.pending-actions { grid-column: 2; }
   .inventory-toolbar .link-button { grid-column: 1 / -1; }
   .network-health-board { grid-template-columns: 1fr; }
   .health-score { min-height: auto; }
@@ -310,6 +316,7 @@ html[data-theme="dark"] #toast { color: #dff0d7; border-color: #526546; backgrou
   .operations-strip > div:last-child { border-bottom: 0; }
   .quick-actions { gap: 9px; }
   .inventory-toolbar .link-button { grid-column: auto; }
+  .pending-registration { grid-template-columns: 1fr; }.pending-registration > i { display: none; }.pending-actions { grid-column: auto; flex-direction: column; }.pending-actions button { width: 100%; }.pending-troubleshooting-head { align-items: flex-start; flex-direction: column; }
   .section-head { align-items: flex-start; gap: 16px; }
   .section-head .primary { width: 100%; }
   .form-grid { grid-template-columns: 1fr; }

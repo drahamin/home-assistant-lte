@@ -32,6 +32,12 @@ In Site Manager, verify:
 
 The UE page writes subscribers to NextEPC/Open5GS MongoDB and keeps a local index for the dashboard. Assign each device to a vineyard zone for filtering and operations. K and OPc are sensitive; keep Baiamonte LTE and Home Assistant access private.
 
+### Pending registration approvals
+
+When an uploaded EPC log or the guarded **Recent EPC logs** tool contains an explicit missing-subscriber failure with a numeric IMSI, Baiamonte LTE adds it to the Pending Registrations queue. The queue stores only the IMSI, requested APN when present, a normalized failure cause, source label, timestamps, and the number of scans that observed it. Raw log lines and SIM secrets are not retained.
+
+An administrator can review the request from **Estate devices** or **Network care**, verify the IMSI against the physical SIM inventory, and provision it using the matching K, OPc, AMF, APN, device role, and vineyard zone. The exact IMSI must be confirmed by the approval request. LTE attach signaling does not reveal K or OPc, so those values must come from the secure SIM programming record. Provisioning is never automatic. Authentication failures for existing subscribers remain troubleshooting findings and are not turned into new-subscriber approvals.
+
 The SIM page supports USB CCID readers through PC/SC, validates a profile, reports the detected reader name, and generates a reviewable pySim worksheet. Physical writing remains disabled by default. Enable it only when a compatible USB reader and programmable test SIM are attached. The exact administrative key and command sequence depend on the SIM vendor. A non-CCID programmer may require its vendor driver.
 
 ## Subscriber Internet access

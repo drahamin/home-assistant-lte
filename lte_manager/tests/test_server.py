@@ -35,6 +35,48 @@ class AppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.get_json()["findings"]), 2)
 
+    def test_missing_subscriber_log_creates_reviewable_pending_registration(self):
+        imsi = "001010000000077"
+        log = f"[hss] ERROR: Cannot find IMSI[{imsi}] in subscriber DB APN[internet]\n"
+        payload = {"file": (io.BytesIO(log.encode()), "mme.log")}
+        response = self.client.post("/api/logs/analyze", data=payload, content_type="multipart/form-data")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["pending_registrations_found"], 1)
+        rows = self.client.get("/api/registrations/pending").get_json()
+        row = next(item for item in rows if item["imsi"] == imsi)
+        self.assertEqual(row["apn"], "internet")
+        self.assertNotIn("k", row)
+        self.assertNotIn("opc", row)
+        with self.server.db() as conn:
+            conn.execute("DELETE FROM pending_registrations WHERE imsi=?", (imsi,))
+
+    def test_authentication_failure_is_not_offered_as_new_subscriber(self):
+        imsi = "001010000000078"
+        log = f"[mme] Authentication failure IMSI[{imsi}] MAC failure\n"
+        self.assertEqual(self.server.failed_registration_candidates(log), [])
+        normal_identity_lookup = f"[mme] Unknown UE by IMSI[{imsi}]\n[emm] Identity response\n"
+        self.assertEqual(self.server.failed_registration_candidates(normal_identity_lookup), [])
+
+    def test_admin_can_approve_pending_registration_with_sim_credentials(self):
+        imsi = "001010000000079"
+        original = self.server.settings
+        try:
+            self.server.settings = lambda: {"epc_type": "local", "apn": "internet", "mcc": "001", "mnc": "01", "tac": 1, "sim_programming_enabled": False}
+            self.server.record_failed_registrations(
+                f"Subscriber not found for IMSI[{imsi}] APN[internet]", "test EPC log")
+            body = {"confirm": imsi, "name": "Approved field camera", "k": "A" * 32,
+                    "opc": "B" * 32, "amf": "8000", "apn": "internet", "msisdn": "",
+                    "zone": "North Vineyard", "device_type": "Camera", "notes": "Approved by test"}
+            response = self.client.post(f"/api/registrations/pending/{imsi}/approve", json=body)
+            self.assertEqual(response.status_code, 201)
+            self.assertFalse(any(row["imsi"] == imsi for row in self.client.get("/api/registrations/pending").get_json()))
+            self.assertTrue(any(row["imsi"] == imsi for row in self.client.get("/api/subscribers").get_json()))
+        finally:
+            with self.server.db() as conn:
+                conn.execute("DELETE FROM pending_registrations WHERE imsi=?", (imsi,))
+                conn.execute("DELETE FROM subscribers WHERE imsi=?", (imsi,))
+            self.server.settings = original
+
     def test_diagnostics_are_allowlisted(self):
         with patch.object(self.server, "ping_check", return_value=True), \
              patch.object(self.server, "tcp_check", return_value={"online": True, "latency_ms": 1}), \
@@ -94,6 +136,8 @@ class AppTests(unittest.TestCase):
         self.assertIn('id="open-bts-management"', page)
         self.assertIn('id="check-bts-path"', page)
         self.assertIn('id="download-bts-status"', page)
+        self.assertIn('id="pending-registrations"', page)
+        self.assertIn('id="troubleshooting-pending"', page)
 
     def test_commissioning_context_identifies_supported_nokia_access(self):
         path = Path(self.temp.name) / "commissioning-access-test.xml"
