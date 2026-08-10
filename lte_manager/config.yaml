@@ -1,5 +1,5 @@
 name: Baiamonte LTE
-version: 0.6.0
+version: 0.6.1
 slug: lte_lab_manager
 description: Operate Baiamonte's production LTE data network for estate cameras, IoT devices, programmable SIMs, EPC, and Nokia radio.
 startup: application
@@ -29,10 +29,29 @@ map:
 options:
   epc_host: 192.0.2.151
   bts_host: 192.0.2.100
+  nokia_api_enabled: false
+  nokia_api_base_url: https://192.0.2.100
+  nokia_api_status_path: /
+  nokia_api_cells_path: ""
+  nokia_api_alarms_path: ""
+  nokia_api_events_path: ""
+  nokia_control_enabled: false
+  nokia_api_control_path: ""
+  nokia_api_username: ""
+  nokia_api_password: ""
+  nokia_api_tls_verify: false
   epc_type: nextepc
   mongodb_uri: mongodb://192.0.2.151:27017/nextepc
   apn: internet
   ue_subnet: 10.45.0.0/16
+  ue_gateway: 10.45.0.1
+  subscriber_ip_version: ipv4
+  subscriber_mtu: 1420
+  subscriber_dns_primary: 1.1.1.1
+  subscriber_dns_secondary: 9.9.9.9
+  default_qci: 9
+  ambr_downlink_mbps: 25
+  ambr_uplink_mbps: 10
   epc_uplink_interface: eth0
   epc_routing_management_enabled: false
   epc_ssh_user: root
@@ -40,6 +59,23 @@ options:
   mcc: "001"
   mnc: "01"
   tac: 1
+  network_name: Baiamonte LTE
+  mme_group_id: 1
+  mme_code: 1
+  s1ap_port: 36412
+  gtpu_port: 2152
+  enb_id: 1
+  cell_id: 1
+  pci: 1
+  lte_band: 2
+  dl_earfcn: 900
+  ul_earfcn: 18900
+  channel_bandwidth_mhz: 10
+  tx_power_dbm: 0
+  access_class: 0
+  home_plmn_only: true
+  preferred_plmns: "001-01:E-UTRAN"
+  forbidden_plmns: ""
   sim_programming_enabled: false
   communications_enabled: false
   communications_gateway_url: ""
@@ -50,10 +86,29 @@ options:
 schema:
   epc_host: str
   bts_host: str
+  nokia_api_enabled: bool
+  nokia_api_base_url: str
+  nokia_api_status_path: str
+  nokia_api_cells_path: str
+  nokia_api_alarms_path: str
+  nokia_api_events_path: str
+  nokia_control_enabled: bool
+  nokia_api_control_path: str
+  nokia_api_username: str
+  nokia_api_password: password
+  nokia_api_tls_verify: bool
   epc_type: list(nextepc|open5gs|local)
   mongodb_uri: str
   apn: str
   ue_subnet: str
+  ue_gateway: str
+  subscriber_ip_version: list(ipv4|ipv4v6)
+  subscriber_mtu: int
+  subscriber_dns_primary: str
+  subscriber_dns_secondary: str
+  default_qci: int
+  ambr_downlink_mbps: int
+  ambr_uplink_mbps: int
   epc_uplink_interface: str
   epc_routing_management_enabled: bool
   epc_ssh_user: str
@@ -61,6 +116,23 @@ schema:
   mcc: str
   mnc: str
   tac: int
+  network_name: str
+  mme_group_id: int
+  mme_code: int
+  s1ap_port: port
+  gtpu_port: port
+  enb_id: int
+  cell_id: int
+  pci: int
+  lte_band: int
+  dl_earfcn: int
+  ul_earfcn: int
+  channel_bandwidth_mhz: list(5|10|15|20)
+  tx_power_dbm: int
+  access_class: int
+  home_plmn_only: bool
+  preferred_plmns: str
+  forbidden_plmns: str
   sim_programming_enabled: bool
   communications_enabled: bool
   communications_gateway_url: str

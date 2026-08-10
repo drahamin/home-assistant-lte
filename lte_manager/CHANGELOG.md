@@ -1,11 +1,19 @@
 # Changelog
 
+## 0.6.1
+
+- Added a filtered Nokia operations feed for cell, RF, GNSS, synchronization, S1/MME, active-UE, temperature, VSWR, channel, software, alarm, and event data.
+- Added guarded Nokia cell lock/unlock, synchronization, alarm acknowledgement, and restart controls through an explicitly configured licensed HTTPS adapter.
+- Added a configured LTE channel panel with eNodeB TX/downlink and RX/uplink frequencies, EARFCNs, duplex spacing, bandwidth, PCI, identity, and power target.
+- Expanded Home Assistant configuration for the complete production radio, core, subscriber, PLMN, Nokia status, and Nokia control profile.
+- Compacted the radio overview and guided SIM commissioning steps for mobile operation.
+
 ## 0.6.0
 
 - Removed the synthetic roaming lab to keep the interface focused on the production Baiamonte camera and IoT network.
 - Added a six-stage SIM commissioning pipeline covering identity, authentication, physical USIM programming, HSS provisioning, device configuration, and live acceptance.
 - Added LTE network-selection guidance for EF.PLMNwAcT, EF.OPLMNwAcT, EF.HPLMNwAcT, EF.FPLMN, EF.EPSLOCI, EF.LOCI, EF.AD, and EF.ACC.
-- Clarifies that CDMA PRLs are not used by LTE and maps the requested function to the correct USIM PLMN selector files.
+- Added complete LTE USIM home/preferred/forbidden network-selection guidance and cached-location review.
 - Added one-click EPC/HSS provisioning from the SIM workbench and an independent production confirmation view for HSS, EPC, S1, Nokia reachability, attach evidence, and subscriber data.
 - Expanded the private production worksheet with camera/IoT role, vineyard zone, optional ICCID, protected credentials, PLMN/APN settings, and a read-back checklist.
 
