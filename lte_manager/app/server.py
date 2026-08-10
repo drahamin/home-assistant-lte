@@ -97,6 +97,12 @@ def db():
         source TEXT NOT NULL, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
         attempts INTEGER NOT NULL DEFAULT 1
     )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS sim_inventory (
+        imsi TEXT PRIMARY KEY, iccid TEXT NOT NULL DEFAULT '', device_name TEXT NOT NULL,
+        device_type TEXT NOT NULL, zone TEXT NOT NULL, stage TEXT NOT NULL,
+        attach_confirmed INTEGER NOT NULL DEFAULT 0, data_verified INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL
+    )""")
     try:
         yield conn
         conn.commit()
@@ -112,6 +118,29 @@ def event(kind, message):
         conn.execute("INSERT INTO events(kind,message,created_at) VALUES(?,?,?)", (kind, message, int(time.time())))
     with APP_LOG.open("a", encoding="utf-8") as handle:
         handle.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} [{kind.upper()}] {message}\n")
+
+
+def update_sim_inventory(sub, stage, iccid="", attach_confirmed=False, data_verified=False):
+    safe_iccid = str(iccid).strip()
+    if safe_iccid and (not safe_iccid.isdigit() or not 18 <= len(safe_iccid) <= 22):
+        raise ValueError("ICCID must contain 18–22 digits when provided")
+    now = int(time.time())
+    with db() as conn:
+        current = conn.execute("SELECT stage FROM sim_inventory WHERE imsi=?", (sub["imsi"],)).fetchone()
+        order = {"profile_ready": 1, "hss_provisioned": 2, "attach_observed": 3, "production_ready": 4}
+        if current and order.get(current["stage"], 0) > order.get(stage, 0):
+            stage = current["stage"]
+        conn.execute("""INSERT INTO sim_inventory
+            (imsi,iccid,device_name,device_type,zone,stage,attach_confirmed,data_verified,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(imsi) DO UPDATE SET
+                iccid=CASE WHEN excluded.iccid!='' THEN excluded.iccid ELSE sim_inventory.iccid END,
+                device_name=excluded.device_name,device_type=excluded.device_type,zone=excluded.zone,
+                stage=excluded.stage,
+                attach_confirmed=MAX(sim_inventory.attach_confirmed,excluded.attach_confirmed),
+                data_verified=MAX(sim_inventory.data_verified,excluded.data_verified),updated_at=excluded.updated_at""",
+                     (sub["imsi"], safe_iccid, sub["name"], sub["device_type"], sub["zone"], stage,
+                      int(attach_confirmed), int(data_verified), now))
 
 
 def tcp_check(host, port, timeout=0.8):
@@ -1366,94 +1395,6 @@ def dismiss_pending_registration(imsi):
     return jsonify({"ok": True})
 
 
-@app.post("/api/simulations/roaming")
-def simulate_roaming_attach():
-    scenario = str((request.get_json(silent=True) or {}).get("scenario", "authorized"))
-    allowed = {"authorized", "no_peer", "roaming_denied", "auth_failed", "data_failed"}
-    if scenario not in allowed:
-        return jsonify({"error": "Choose an available roaming simulation scenario"}), 400
-    failed_at = {"no_peer": 2, "roaming_denied": 3, "auth_failed": 4, "data_failed": 6}.get(scenario)
-    definitions = [
-        ("UE identity", "Synthetic IMSI 001010000009999 presented on a test PLMN"),
-        ("Visited MME", "External home PLMN detected; local provisioning bypassed"),
-        ("Diameter route", "Authorized home-HSS peer selected"),
-        ("Home HSS policy", "Roaming accepted and EPS authentication vectors returned"),
-        ("EPS-AKA", "Synthetic UE response validated against the returned vector"),
-        ("Default bearer", "Roaming subscription and test APN applied"),
-        ("Data path", "Synthetic DNS, HTTPS, and return traffic completed"),
-    ]
-    failures = {
-        "no_peer": "No authorized Diameter/S6a home-HSS peer is configured",
-        "roaming_denied": "The simulated home HSS rejected roaming for this subscription",
-        "auth_failed": "The synthetic UE response did not match the authentication vector",
-        "data_failed": "Authentication succeeded, but the simulated data breakout had no return path",
-    }
-    steps = []
-    for index, (label, detail) in enumerate(definitions):
-        if failed_at is not None and index == failed_at:
-            steps.append({"label": label, "state": "failed", "detail": failures[scenario]})
-        elif failed_at is not None and index > failed_at:
-            steps.append({"label": label, "state": "blocked", "detail": "Not attempted after the previous simulated failure"})
-        else:
-            steps.append({"label": label, "state": "passed", "detail": detail})
-    success = failed_at is None
-    component_definitions = [
-        ("test_ue", "Test UE", "Synthetic USIM profile", 0),
-        ("visited_mme", "Visited MME", "Attach and mobility control", 1),
-        ("diameter", "Diameter edge", "S6a realm routing", 2),
-        ("home_hss", "Home HSS", "Roaming policy and EPS vectors", 4),
-        ("packet_core", "SGW / PGW", "Default bearer and test APN", 5),
-        ("data_probe", "Data probe", "DNS, HTTPS, and return path", 6),
-    ]
-    infrastructure = []
-    for component_id, label, detail, step_index in component_definitions:
-        if failed_at is None or step_index < failed_at:
-            state = "online"
-        elif step_index == failed_at:
-            state = "failed"
-        else:
-            state = "blocked"
-        infrastructure.append({"id": component_id, "label": label, "detail": detail, "state": state})
-
-    trace_definitions = [
-        ("UE", "Visited MME", "NAS Attach Request", 0),
-        ("Visited MME", "Diameter edge", "AIR · Authentication-Information-Request", 2),
-        ("Diameter edge", "Home HSS", "AIR · routed to home realm", 2),
-        ("Home HSS", "Diameter edge", "AIA · synthetic EPS vector", 3),
-        ("Diameter edge", "Visited MME", "AIA · vector delivered", 3),
-        ("Visited MME", "UE", "NAS Authentication Request", 4),
-        ("UE", "Visited MME", "NAS Authentication Response", 4),
-        ("Visited MME", "Home HSS", "ULR / ULA · roaming profile", 3),
-        ("Visited MME", "SGW / PGW", "Create Session · test APN", 5),
-        ("SGW / PGW", "UE", "Default bearer accepted", 5),
-        ("UE", "Data probe", "DNS + HTTPS + return traffic", 6),
-    ]
-    trace = []
-    for source, destination, message, step_index in trace_definitions:
-        if failed_at is None or step_index < failed_at:
-            state = "passed"
-        elif step_index == failed_at:
-            state = "failed"
-        else:
-            state = "blocked"
-        trace.append({"from": source, "to": destination, "message": message, "state": state})
-
-    event("simulation", f"Ran offline roaming lab scenario: {scenario}")
-    return jsonify({"simulation": True, "scenario": scenario, "success": success,
-                    "lab": {"id": f"LAB-{secrets.token_hex(3).upper()}",
-                            "mode": "closed synthetic infrastructure",
-                            "radio_mode": "modeled only — no RF commands issued",
-                            "diameter_realm": "home.test.3gppnetwork.org",
-                            "visited_realm": "visited.test.3gppnetwork.org",
-                            "apn": "internet.test", "ue_address": "198.51.100.10",
-                            "vector": "generated in memory and discarded"},
-                    "identity": {"imsi": "001010000009999", "home_plmn": "001/01 TEST",
-                                 "visited_plmn": "001/02 TEST", "subscription": "Synthetic external-carrier data"},
-                    "infrastructure": infrastructure, "trace": trace, "steps": steps,
-                    "summary": "Synthetic roaming authentication and data bearer completed" if success else failures[scenario],
-                    "notice": "Offline simulation only. No radio transmission, AT&T/FirstNet identity, carrier endpoint, HSS, or live EPC was used."})
-
-
 @app.get("/api/bts/status")
 def bts_status_api():
     return jsonify(nokia_status())
@@ -1462,12 +1403,15 @@ def bts_status_api():
 @app.post("/api/subscribers")
 def create_subscriber():
     try:
-        sub = validate_subscriber(request.get_json(silent=True) or {})
+        body = request.get_json(silent=True) or {}
+        sub = validate_subscriber(body)
         result = provision_mongo(sub)
         with db() as conn:
             conn.execute("INSERT OR REPLACE INTO subscribers(imsi,name,k,opc,amf,apn,msisdn,zone,device_type,critical,notes,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                          (sub["imsi"], sub["name"], sub["k"], sub["opc"], sub["amf"], sub["apn"], sub["msisdn"],
                           sub["zone"], sub["device_type"], int(sub["critical"]), sub["notes"], int(time.time())))
+        if body.get("commissioning_source") == "sim_workbench":
+            update_sim_inventory(sub, "hss_provisioned", body.get("iccid", ""))
         event("subscriber", f"{sub['name']} ({sub['imsi']}) — {result}")
         return jsonify({"ok": True, "message": result}), 201
     except (ValueError, PyMongoError) as exc:
@@ -1658,8 +1602,7 @@ def upload_commissioning():
     return jsonify({"ok": True, "name": safe_name, "size": target.stat().st_size})
 
 
-@app.get("/api/sim/readers")
-def sim_readers():
+def sim_reader_status():
     tool = shutil.which("pySim-shell.py") or shutil.which("pySim-shell") or shutil.which("pySim-prog.py")
     detected = []
     try:
@@ -1668,9 +1611,111 @@ def sim_readers():
     except Exception:
         # The PC/SC service may still be starting or no USB reader may be attached.
         pass
-    return jsonify({"enabled": bool(settings()["sim_programming_enabled"]), "pysim": bool(tool),
-                    "usb_visible": Path("/dev/bus/usb").exists(), "readers": detected,
-                    "ready": bool(tool and detected and settings()["sim_programming_enabled"])})
+    enabled = bool(settings()["sim_programming_enabled"])
+    return {"enabled": enabled, "pysim": bool(tool), "usb_visible": Path("/dev/bus/usb").exists(),
+            "readers": detected, "ready": bool(tool and detected and enabled)}
+
+
+@app.get("/api/sim/readers")
+def sim_readers():
+    return jsonify(sim_reader_status())
+
+
+@app.get("/api/sim/production-plan")
+def sim_production_plan():
+    cfg = settings()
+    reader = sim_reader_status()
+    return jsonify({
+        "network": {"mcc": str(cfg["mcc"]), "mnc": str(cfg["mnc"]), "apn": str(cfg["apn"]),
+                    "tac": int(cfg["tac"]), "plmn": f"{cfg['mcc']}-{cfg['mnc']}"},
+        "reader": reader,
+        "steps": [
+            {"id": "identity", "label": "Create device identity", "detail": "Assign the camera or IoT device, zone, IMSI, ICCID record, and APN."},
+            {"id": "security", "label": "Generate authentication", "detail": "Create K and OP, derive OPc, and retain the protected production record."},
+            {"id": "card", "label": "Program and read back USIM", "detail": "Write the owned programmable USIM with vendor-authorized pySim commands, then verify IMSI and LTE files."},
+            {"id": "hss", "label": "Provision EPC / HSS", "detail": "Store the same IMSI, K, OPc, AMF, APN, and policy in NextEPC/Open5GS."},
+            {"id": "device", "label": "Configure camera or IoT modem", "detail": "Set the estate APN, automatic LTE network selection, and device reconnect policy."},
+            {"id": "attach", "label": "Confirm live service", "detail": "Observe attach/session evidence, then prove DNS, outbound, and return traffic."},
+        ],
+        "lte_files": [
+            {"file": "EF.IMSI", "purpose": "Subscriber identity", "required": True},
+            {"file": "USIM authentication storage", "purpose": "K and OPc/OP; card-vendor-specific protected write", "required": True},
+            {"file": "EF.AD", "purpose": "MNC length and administrative data", "required": True},
+            {"file": "EF.ACC", "purpose": "Access class control", "required": True},
+            {"file": "EF.PLMNwAcT / EF.OPLMNwAcT", "purpose": "Preferred LTE PLMN selection", "required": False},
+            {"file": "EF.HPLMNwAcT", "purpose": "Home-network search behavior", "required": False},
+            {"file": "EF.FPLMN", "purpose": "Forbidden PLMNs; clear stale entries during commissioning", "required": False},
+            {"file": "EF.EPSLOCI / EF.LOCI", "purpose": "Cached location; clear before first production attach", "required": False},
+        ],
+        "prl_note": "PRL is a CDMA/3GPP2 file and is not used for LTE attachment. LTE network preference uses PLMN selector files such as EF.PLMNwAcT, EF.OPLMNwAcT, and EF.HPLMNwAcT.",
+        "write_note": "Direct card writes remain card-vendor-specific and require the correct ADM credentials. Baiamonte LTE will not guess an ADM key or issue an unverified write command.",
+    })
+
+
+@app.get("/api/sim/inventory")
+def sim_inventory():
+    with db() as conn:
+        rows = conn.execute("""SELECT imsi,iccid,device_name,device_type,zone,stage,
+                            attach_confirmed,data_verified,updated_at
+                            FROM sim_inventory ORDER BY updated_at DESC LIMIT 100""").fetchall()
+    return jsonify([{**dict(row), "attach_confirmed": bool(row["attach_confirmed"]),
+                     "data_verified": bool(row["data_verified"])} for row in rows])
+
+
+@app.post("/api/sim/confirm")
+def sim_confirm_subscriber():
+    imsi = str((request.get_json(silent=True) or {}).get("imsi", "")).strip()
+    if not IMSI_RE.fullmatch(imsi):
+        return jsonify({"error": "Enter the exact programmed IMSI to confirm"}), 400
+    with db() as conn:
+        subscriber = conn.execute("SELECT imsi,name,device_type,zone FROM subscribers WHERE imsi=?", (imsi,)).fetchone()
+        registered = bool(subscriber)
+        routing_row = conn.execute("SELECT value FROM app_settings WHERE key='routing_last_verified'").fetchone()
+    routing_verified = False
+    if routing_row:
+        try:
+            routing_verified = bool(json.loads(routing_row["value"]).get("verified"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+    network = sample_network()
+    evidence, epc_log_state, epc_log_detail = [], "unknown", "Remote EPC log access is not configured"
+    try:
+        cfg = routing_config()
+        if cfg["enabled"] and EPC_SSH_KEY.exists() and EPC_KNOWN_HOSTS.exists():
+            script = f"""set -eu
+IMSI='{imsi}'
+journalctl --no-pager -n 1200 -u nextepc-mmed -u nextepc-hssd -u open5gs-mmed -u open5gs-hssd 2>/dev/null | grep -F -- "$IMSI" | tail -n 12 || true
+"""
+            _, output = run_epc_script(script, timeout=20)
+            evidence = [line[:500] for line in output.splitlines() if line.strip()][-12:]
+            epc_log_state = "online" if evidence else "offline"
+            epc_log_detail = "Matching IMSI activity found in recent EPC logs" if evidence else "No recent EPC log line contains this IMSI"
+    except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
+        epc_log_detail = str(exc)[:300]
+    positive = bool(re.search(r"attach accept|registration accept|initial context|create session|connected", "\n".join(evidence), re.IGNORECASE))
+    checks = [
+        {"id": "registry", "label": "HSS subscriber", "state": "online" if registered else "offline",
+         "detail": "IMSI is provisioned in Baiamonte LTE" if registered else "Provision this IMSI to the EPC/HSS first"},
+        {"id": "epc", "label": "EPC core", "state": "online" if network["epc"]["online"] else "offline",
+         "detail": "Core is reachable" if network["epc"]["online"] else "Core is unreachable"},
+        {"id": "s1", "label": "S1 control", "state": "online" if network["epc"]["s1"]["online"] else "offline",
+         "detail": "S1 listener is reachable" if network["epc"]["s1"]["online"] else "S1 is unavailable"},
+        {"id": "radio", "label": "Nokia radio", "state": "online" if network["bts"]["online"] else "offline",
+         "detail": "Radio management path is reachable" if network["bts"]["online"] else "Radio management path is unreachable"},
+        {"id": "attach", "label": "Attach evidence", "state": "online" if positive else epc_log_state,
+         "detail": "Recent EPC logs show positive attach/session evidence" if positive else epc_log_detail},
+        {"id": "data", "label": "Subscriber data", "state": "online" if routing_verified else "unknown",
+         "detail": "A live UE traffic test previously passed" if routing_verified else "Run the UE traffic test with this device to prove data"},
+    ]
+    if subscriber:
+        update_sim_inventory({"imsi": subscriber["imsi"], "name": subscriber["name"],
+                              "device_type": subscriber["device_type"], "zone": subscriber["zone"]},
+                             "production_ready" if positive and routing_verified else "attach_observed" if positive else "hss_provisioned",
+                             attach_confirmed=positive, data_verified=routing_verified)
+    event("subscriber", f"Checked production onboarding status for UE {imsi}")
+    return jsonify({"imsi": imsi, "registered": registered, "attach_confirmed": positive,
+                    "data_verified": routing_verified, "checks": checks, "evidence": evidence,
+                    "complete": registered and positive and routing_verified})
 
 
 @app.post("/api/sim/opc")
@@ -1767,17 +1812,43 @@ def support_bundle():
 
 @app.post("/api/sim/script")
 def sim_script():
+    body = request.get_json(silent=True) or {}
     try:
-        sub = validate_subscriber(request.get_json(silent=True) or {})
+        sub = validate_subscriber(body)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     cfg = settings()
-    script = "\n".join([f"# Review before using with pySim-shell; profile for {sub['name']}",
-        f"update_binary EF.IMSI --data {sub['imsi']}", f"# Authentication key K: {sub['k']}", f"# OPc: {sub['opc']}",
-        f"# PLMN: {cfg['mcc']}-{cfg['mnc']}", "# Exact administrative authentication and card-specific commands depend on your programmable SIM."])
+    iccid = str(body.get("iccid", "")).strip()
+    if iccid and (not iccid.isdigit() or not 18 <= len(iccid) <= 22):
+        return jsonify({"error": "ICCID must contain 18–22 digits when provided"}), 400
+    script = "\n".join([
+        "# BAIAMONTE LTE — PRIVATE PRODUCTION SIM RECORD",
+        "# Store securely. This file contains subscriber authentication material.",
+        f"Device: {sub['name']}", f"Role: {sub['device_type']}", f"Zone: {sub['zone']}",
+        f"ICCID: {iccid or 'Record the printed/card-read ICCID'}", f"IMSI: {sub['imsi']}",
+        f"K: {sub['k']}", f"OPc: {sub['opc']}", f"AMF: {sub['amf']}",
+        f"Home PLMN: {cfg['mcc']}-{cfg['mnc']}", f"APN: {sub['apn']}", f"TAC: {cfg['tac']}",
+        "",
+        "USIM PROGRAMMING REVIEW",
+        "[ ] Identify the exact card model and obtain its authorized ADM credentials",
+        "[ ] Write and read back EF.IMSI",
+        "[ ] Write K and OPc/OP using the card vendor's protected command",
+        "[ ] Verify EF.AD MNC length and EF.ACC access class",
+        f"[ ] Set EF.PLMNwAcT / EF.OPLMNwAcT preference to {cfg['mcc']}-{cfg['mnc']} with E-UTRAN access when supported",
+        "[ ] Review EF.HPLMNwAcT and clear stale EF.FPLMN entries",
+        "[ ] Clear EF.EPSLOCI / EF.LOCI before the first production attach when supported",
+        "[ ] Configure the device modem for automatic LTE selection and the APN above",
+        "[ ] Provision the same IMSI, K, OPc, AMF, and APN in the EPC/HSS",
+        "[ ] Confirm attach evidence and run a live subscriber traffic test",
+        "",
+        "NOTE: PRL is a CDMA/3GPP2 file and is not used by LTE. LTE selection uses PLMN selector files.",
+        "Do not issue guessed pySim write commands. File paths, encodings, and ADM access depend on the programmable USIM vendor.",
+    ])
     fd, path = tempfile.mkstemp(prefix="pysim-profile-", suffix=".txt", dir=DATA_DIR)
     with os.fdopen(fd, "w") as handle: handle.write(script + "\n")
     os.chmod(path, 0o600)
+    update_sim_inventory(sub, "profile_ready", iccid)
+    event("sim", f"Prepared private production worksheet for UE {sub['imsi']}")
     return send_file(path, as_attachment=True, download_name=f"pysim-{sub['imsi']}.txt")
 
 

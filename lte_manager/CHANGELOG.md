@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0
+
+- Removed the synthetic roaming lab to keep the interface focused on the production Baiamonte camera and IoT network.
+- Added a six-stage SIM commissioning pipeline covering identity, authentication, physical USIM programming, HSS provisioning, device configuration, and live acceptance.
+- Added LTE network-selection guidance for EF.PLMNwAcT, EF.OPLMNwAcT, EF.HPLMNwAcT, EF.FPLMN, EF.EPSLOCI, EF.LOCI, EF.AD, and EF.ACC.
+- Clarifies that CDMA PRLs are not used by LTE and maps the requested function to the correct USIM PLMN selector files.
+- Added one-click EPC/HSS provisioning from the SIM workbench and an independent production confirmation view for HSS, EPC, S1, Nokia reachability, attach evidence, and subscriber data.
+- Expanded the private production worksheet with camera/IoT role, vineyard zone, optional ICCID, protected credentials, PLMN/APN settings, and a read-back checklist.
+
 ## 0.5.5
 
 - Expanded the offline roaming lab into a closed synthetic infrastructure emulator.
