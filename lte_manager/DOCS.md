@@ -63,6 +63,8 @@ The app samples EPC and radio reachability every minute and retains 30 days of c
 
 The Overview page distinguishes measured reachability from end-to-end verification. EPC, S1, MongoDB, Nokia management, SSH, DNS, site Internet, routing, UE data, and the optional communications gateway each have their own state. **Not verified** means the app does not have enough evidence; it does not mean the service is working or failed.
 
+The subscriber data pulse adds four gauges: current EPC/radio/S1/registry reachability, readiness of the seven managed routing checks, bidirectional traffic evidence from cumulative EPC firewall counters, and the percentage of subscriber profiles assigned both a device role and vineyard zone. Routing and traffic gauges use the last successful EPC routing check and show their age. They are operational evidence—not bandwidth, data-usage, billing, or per-device session measurements.
+
 Network Care includes allowlisted tools for known service ports, container routes, DNS/uplink checks, inventory readiness, and incident history. With trusted EPC SSH access it also provides read-only core-process, interface, firewall, traffic-counter, S1/session, time-sync, and journal views. Arbitrary shell commands are not accepted. Activity can be searched by type and downloaded; support bundles and exports exclude subscriber authentication secrets and communications tokens.
 
 ## Optional outbound voice and text

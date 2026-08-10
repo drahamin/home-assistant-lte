@@ -109,6 +109,18 @@ h2 { font-size: 27px; font-weight: 750; letter-spacing: -.025em; }
 .quick-actions button > span { border-radius: 11px; }
 .quick-actions button b { font-family: var(--sans); }
 
+.subscriber-gauge-panel { margin-top: 18px; }
+.subscriber-gauge-panel .panel-title > div > span { display: block; margin-top: 4px; color: var(--muted); font-size: 9px; line-height: 1.45; }
+.subscriber-gauges { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 12px; margin-top: 18px; }
+.subscriber-gauge { display: grid; grid-template-columns: 90px minmax(0,1fr); align-items: center; gap: 13px; min-height: 126px; padding: 15px; border: 1px solid #eee6db; border-radius: 14px; background: #fcfaf7; }
+.gauge-dial { --gauge-color: var(--green); width: 86px; height: 86px; display: grid; place-items: center; position: relative; flex: 0 0 auto; border-radius: 50%; background: conic-gradient(from -90deg,var(--gauge-color) 0 calc(var(--gauge-value) * 1%),#e8e1d7 0 100%); box-shadow: inset 0 0 0 1px rgba(60,47,34,.04); }
+.gauge-dial::before { content: ""; position: absolute; inset: 9px; border-radius: 50%; background: #fff; box-shadow: 0 2px 9px rgba(23,17,11,.08); }
+.gauge-dial > div { position: relative; z-index: 1; text-align: center; }
+.gauge-dial strong,.gauge-dial small { display: block; }.gauge-dial strong { font-size: 17px; line-height: 1; }.gauge-dial small { margin-top: 5px; color: var(--muted); font-size: 6px; font-weight: 800; letter-spacing: .1em; }
+.subscriber-gauge.warning .gauge-dial { --gauge-color: #c69a48; }.subscriber-gauge.bad .gauge-dial { --gauge-color: var(--red); }.subscriber-gauge.unknown .gauge-dial { --gauge-color: #b7afa4; }
+.subscriber-gauge > span { min-width: 0; }.subscriber-gauge > span b,.subscriber-gauge > span small,.subscriber-gauge > span em { display: block; }.subscriber-gauge > span b { font-size: 11px; }.subscriber-gauge > span small { margin-top: 5px; color: var(--ink); font-size: 8px; line-height: 1.4; }.subscriber-gauge > span em { margin-top: 7px; color: var(--muted); font-size: 7px; font-style: normal; line-height: 1.4; }
+.gauge-caveat { margin: 12px 2px 0; color: var(--muted); font-size: 8px; line-height: 1.45; }
+
 .cards, .grid-two, .insights-grid { gap: 18px; }
 .status-card, .panel { border-radius: 17px; border-color: var(--line); background: #fff; box-shadow: var(--shadow); }
 .status-card { padding: 23px; }
@@ -221,6 +233,7 @@ h2 { font-size: 27px; font-weight: 750; letter-spacing: -.025em; }
   .network-health-board { grid-template-columns: 1fr; }
   .health-score { min-height: auto; }
   .visibility-lights { grid-template-columns: repeat(2,1fr); }
+  .subscriber-gauges { grid-template-columns: repeat(2,1fr); }
   .operations-insight-grid { grid-template-columns: 1fr; }.operations-insight-grid > :last-child { grid-column: auto; }
   .communications-grid { grid-template-columns: 1fr; }
 }
@@ -246,6 +259,7 @@ h2 { font-size: 27px; font-weight: 750; letter-spacing: -.025em; }
   .dialog-card { padding: 22px 17px; }
   #ues th:nth-child(3), #ues td:nth-child(3), #ues th:nth-child(4), #ues td:nth-child(4) { display: table-cell; }
   .visibility-lights, .network-tool-grid, .communications-grid form, .log-toolbar { grid-template-columns: 1fr; }
+  .subscriber-gauges { grid-template-columns: 1fr; }
   .traffic-evidence { grid-template-columns: 1fr 1fr 1fr; }
   .log-toolbar > span { padding: 0; }
 }

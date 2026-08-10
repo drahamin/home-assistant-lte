@@ -83,6 +83,7 @@ class AppTests(unittest.TestCase):
         self.assertIn("Estate device inventory", page)
         self.assertIn("SAFE NETWORK TOOLKIT", page)
         self.assertIn("PBX voice &amp; text gateway", page)
+        self.assertIn("Traffic &amp; connection gauges", page)
 
     def test_network_visibility_has_actionable_status_lights(self):
         with patch.object(self.server, "ping_check", return_value=True), \
@@ -94,6 +95,34 @@ class AppTests(unittest.TestCase):
         self.assertTrue({"epc", "s1", "database", "radio", "bts_admin", "ssh", "dns", "uplink", "routing", "ue_data", "communications"}.issubset(ids))
         self.assertIsInstance(data["actions"], list)
         self.assertIn("health_score", data)
+
+    def test_subscriber_gauges_use_measured_network_and_routing_data(self):
+        status = {
+            "epc": {"online": True, "s1": {"online": True}, "database": {"online": True}},
+            "bts": {"online": False},
+        }
+        routing = {
+            "checks": {"forwarding": True, "interface": True, "route": True, "nat": True,
+                       "outbound": True, "return": True, "service": False},
+            "counters": {"nat": 22, "outbound": 18, "return": 15},
+            "checked_at": 1234,
+        }
+        rows = [{"zone": "North Vineyard", "device_type": "Camera"},
+                {"zone": "Unassigned", "device_type": "Other IoT"}]
+        data = self.server.subscriber_gauges(status, routing, rows)
+        gauges = {item["id"]: item for item in data["items"]}
+        self.assertEqual(gauges["connections"]["value"], 75)
+        self.assertEqual(gauges["routing"]["value"], 86)
+        self.assertEqual(gauges["traffic"]["display"], "2-way")
+        self.assertEqual(gauges["profiles"]["value"], 50)
+
+    def test_subscriber_gauges_show_unmeasured_epc_data(self):
+        status = {"epc": {"online": False, "s1": {"online": False}, "database": {"online": False}},
+                  "bts": {"online": False}}
+        gauges = {item["id"]: item for item in self.server.subscriber_gauges(status, None, [])["items"]}
+        self.assertIsNone(gauges["routing"]["value"])
+        self.assertIsNone(gauges["traffic"]["value"])
+        self.assertIsNone(gauges["profiles"]["value"])
 
     def test_network_tools_are_allowlisted(self):
         rejected = self.client.post("/api/tools/run", json={"action": "shell"})

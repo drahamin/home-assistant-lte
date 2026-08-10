@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1
+
+- Added subscriber traffic and connection gauges to the Overview page.
+- Added live connection-fabric readiness, last-known EPC routing readiness, bidirectional packet evidence, and subscriber-profile completeness.
+- Added explicit measurement freshness and unmeasured states so stale or unavailable EPC data is never shown as live throughput.
+
 ## 0.5.0
 
 - Added an expanded network visibility board for EPC, S1, MongoDB, Nokia administration, SSH, DNS, site Internet, EPC routing, UE traffic, and communications.

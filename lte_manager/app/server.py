@@ -444,6 +444,56 @@ def network_visibility(status=None):
             "home_assistant_ready": bool(os.getenv("SUPERVISOR_TOKEN"))}
 
 
+def subscriber_gauges(status, route_status, subscriber_rows):
+    connection_signals = [status["epc"]["online"], status["bts"]["online"],
+                          status["epc"]["s1"]["online"], status["epc"]["database"]["online"]]
+    connection_value = round(100 * sum(bool(value) for value in connection_signals) / len(connection_signals))
+    connection_ready = sum(bool(value) for value in connection_signals)
+
+    routing_checks = route_status.get("checks", {}) if isinstance(route_status, dict) else {}
+    routing_value = (round(100 * sum(bool(value) for value in routing_checks.values()) / len(routing_checks))
+                     if routing_checks else None)
+    counters = route_status.get("counters", {}) if isinstance(route_status, dict) else {}
+    outbound = max(0, int(counters.get("outbound", 0) or 0))
+    returned = max(0, int(counters.get("return", 0) or 0))
+    nat = max(0, int(counters.get("nat", 0) or 0))
+    traffic_value = None if not route_status else 100 if outbound and returned else 50 if outbound else 0
+    traffic_display = "2-way" if traffic_value == 100 else "Out only" if traffic_value == 50 else "None" if traffic_value == 0 else "—"
+
+    subscriber_count = len(subscriber_rows)
+    profiled = sum(row["zone"] != "Unassigned" and row["device_type"] != "Other IoT"
+                   for row in subscriber_rows)
+    profile_value = round(100 * profiled / subscriber_count) if subscriber_count else None
+
+    def gauge(gauge_id, label, value, display, detail, source, updated_at=None):
+        return {"id": gauge_id, "label": label, "value": value, "display": display,
+                "detail": detail, "source": source, "updated_at": updated_at}
+
+    route_checked_at = route_status.get("checked_at") if isinstance(route_status, dict) else None
+    return {
+        "sampled_at": int(time.time()),
+        "items": [
+            gauge("connections", "Connection fabric", connection_value, f"{connection_value}%",
+                  f"{connection_ready} of {len(connection_signals)} EPC, radio, S1, and registry signals ready",
+                  "Live network probes", int(time.time())),
+            gauge("routing", "Routing readiness", routing_value,
+                  f"{routing_value}%" if routing_value is not None else "—",
+                  f"{sum(bool(value) for value in routing_checks.values())} of {len(routing_checks)} forwarding checks ready"
+                  if routing_checks else "Run Check current routing to measure the EPC",
+                  "Last EPC routing check", route_checked_at),
+            gauge("traffic", "Traffic evidence", traffic_value, traffic_display,
+                  f"{outbound:,} outbound · {returned:,} return · {nat:,} NAT packets"
+                  if route_status else "No EPC packet-counter snapshot yet",
+                  "Cumulative EPC firewall counters", route_checked_at),
+            gauge("profiles", "Subscriber setup", profile_value,
+                  f"{profile_value}%" if profile_value is not None else "—",
+                  f"{profiled} of {subscriber_count} devices have a role and vineyard zone"
+                  if subscriber_count else "Add the first subscriber profile",
+                  "Baiamonte device registry", int(time.time())),
+        ],
+    }
+
+
 def diagnostic_checks():
     cfg = settings()
     checks = []
@@ -1113,7 +1163,7 @@ def overview():
         events = [dict(row) for row in conn.execute("SELECT * FROM events ORDER BY id DESC LIMIT 8")]
         route_row = conn.execute("SELECT value FROM app_settings WHERE key='routing_last_status'").fetchone()
         verified_row = conn.execute("SELECT value FROM app_settings WHERE key='routing_last_verified'").fetchone()
-        inventory_rows = conn.execute("SELECT device_type,critical FROM subscribers").fetchall()
+        inventory_rows = conn.execute("SELECT device_type,critical,zone FROM subscribers").fetchall()
     routing = {"configured": None, "verified": None}
     try:
         if route_row:
@@ -1125,9 +1175,16 @@ def overview():
     inventory = {"cameras": sum(row["device_type"] == "Camera" for row in inventory_rows),
                  "iot": sum(row["device_type"] != "Camera" for row in inventory_rows),
                  "critical": sum(bool(row["critical"]) for row in inventory_rows)}
+    route_status = None
+    if route_row:
+        try:
+            route_status = json.loads(route_row["value"])
+        except (json.JSONDecodeError, TypeError):
+            route_status = None
     return jsonify({"epc": status["epc"], "bts": status["bts"],
                     "routing": routing, "subscriber_count": ue_count, "events": events,
                     "inventory": inventory,
+                    "subscriber_gauges": subscriber_gauges(status, route_status, inventory_rows),
                     "visibility": visibility,
                     "config": {k: v for k, v in cfg.items() if k not in SECRET_SETTING_KEYS}})
 
