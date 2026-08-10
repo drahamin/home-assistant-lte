@@ -85,9 +85,15 @@ class AppTests(unittest.TestCase):
         self.assertTrue(data["success"])
         self.assertIn("TEST", data["identity"]["home_plmn"])
         self.assertIn("No radio transmission", data["notice"])
+        self.assertEqual(data["lab"]["radio_mode"], "modeled only — no RF commands issued")
+        self.assertEqual(len(data["infrastructure"]), 6)
+        self.assertEqual(len(data["trace"]), 11)
+        self.assertTrue(all(item["state"] == "online" for item in data["infrastructure"]))
+        self.assertNotIn("att", str(data["lab"]).lower())
         failed = self.client.post("/api/simulations/roaming", json={"scenario": "no_peer"}).get_json()
         self.assertFalse(failed["success"])
         self.assertEqual(failed["steps"][2]["state"], "failed")
+        self.assertEqual(failed["infrastructure"][2]["state"], "failed")
         rejected = self.client.post("/api/simulations/roaming", json={"scenario": "live-att"})
         self.assertEqual(rejected.status_code, 400)
 
@@ -153,7 +159,7 @@ class AppTests(unittest.TestCase):
         self.assertIn('id="pending-registrations"', page)
         self.assertIn('id="troubleshooting-pending"', page)
         self.assertIn('id="run-roaming-simulation"', page)
-        self.assertIn("External-carrier data simulation", page)
+        self.assertIn("Synthetic roaming infrastructure", page)
 
     def test_commissioning_context_identifies_supported_nokia_access(self):
         path = Path(self.temp.name) / "commissioning-access-test.xml"

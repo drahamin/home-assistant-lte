@@ -1397,11 +1397,59 @@ def simulate_roaming_attach():
         else:
             steps.append({"label": label, "state": "passed", "detail": detail})
     success = failed_at is None
+    component_definitions = [
+        ("test_ue", "Test UE", "Synthetic USIM profile", 0),
+        ("visited_mme", "Visited MME", "Attach and mobility control", 1),
+        ("diameter", "Diameter edge", "S6a realm routing", 2),
+        ("home_hss", "Home HSS", "Roaming policy and EPS vectors", 4),
+        ("packet_core", "SGW / PGW", "Default bearer and test APN", 5),
+        ("data_probe", "Data probe", "DNS, HTTPS, and return path", 6),
+    ]
+    infrastructure = []
+    for component_id, label, detail, step_index in component_definitions:
+        if failed_at is None or step_index < failed_at:
+            state = "online"
+        elif step_index == failed_at:
+            state = "failed"
+        else:
+            state = "blocked"
+        infrastructure.append({"id": component_id, "label": label, "detail": detail, "state": state})
+
+    trace_definitions = [
+        ("UE", "Visited MME", "NAS Attach Request", 0),
+        ("Visited MME", "Diameter edge", "AIR · Authentication-Information-Request", 2),
+        ("Diameter edge", "Home HSS", "AIR · routed to home realm", 2),
+        ("Home HSS", "Diameter edge", "AIA · synthetic EPS vector", 3),
+        ("Diameter edge", "Visited MME", "AIA · vector delivered", 3),
+        ("Visited MME", "UE", "NAS Authentication Request", 4),
+        ("UE", "Visited MME", "NAS Authentication Response", 4),
+        ("Visited MME", "Home HSS", "ULR / ULA · roaming profile", 3),
+        ("Visited MME", "SGW / PGW", "Create Session · test APN", 5),
+        ("SGW / PGW", "UE", "Default bearer accepted", 5),
+        ("UE", "Data probe", "DNS + HTTPS + return traffic", 6),
+    ]
+    trace = []
+    for source, destination, message, step_index in trace_definitions:
+        if failed_at is None or step_index < failed_at:
+            state = "passed"
+        elif step_index == failed_at:
+            state = "failed"
+        else:
+            state = "blocked"
+        trace.append({"from": source, "to": destination, "message": message, "state": state})
+
     event("simulation", f"Ran offline roaming lab scenario: {scenario}")
     return jsonify({"simulation": True, "scenario": scenario, "success": success,
+                    "lab": {"id": f"LAB-{secrets.token_hex(3).upper()}",
+                            "mode": "closed synthetic infrastructure",
+                            "radio_mode": "modeled only — no RF commands issued",
+                            "diameter_realm": "home.test.3gppnetwork.org",
+                            "visited_realm": "visited.test.3gppnetwork.org",
+                            "apn": "internet.test", "ue_address": "198.51.100.10",
+                            "vector": "generated in memory and discarded"},
                     "identity": {"imsi": "001010000009999", "home_plmn": "001/01 TEST",
                                  "visited_plmn": "001/02 TEST", "subscription": "Synthetic external-carrier data"},
-                    "steps": steps,
+                    "infrastructure": infrastructure, "trace": trace, "steps": steps,
                     "summary": "Synthetic roaming authentication and data bearer completed" if success else failures[scenario],
                     "notice": "Offline simulation only. No radio transmission, AT&T/FirstNet identity, carrier endpoint, HSS, or live EPC was used."})
 

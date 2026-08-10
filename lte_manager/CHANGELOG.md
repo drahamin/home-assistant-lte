@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.5
+
+- Expanded the offline roaming lab into a closed synthetic infrastructure emulator.
+- Added component health lights for the test UE, visited MME, Diameter edge, home HSS, SGW/PGW, and data probe.
+- Added an 11-message NAS, S6a, bearer, and data trace with scenario-specific failure and blocked states.
+- Generates short-lived synthetic lab identities and authentication-vector metadata without retaining secrets or controlling live RF.
+
 ## 0.5.4
 
 - Added an offline roaming-data simulator for external-carrier and public-safety-style attach flows.
