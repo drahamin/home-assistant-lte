@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0
+
+- Added an expanded network visibility board for EPC, S1, MongoDB, Nokia administration, SSH, DNS, site Internet, EPC routing, UE traffic, and communications.
+- Added a health score, prioritized next actions, incident history, monitoring freshness, routing counters, and inventory-readiness metrics.
+- Added safe one-click known-port, route, DNS/uplink, inventory, and incident tools.
+- Added read-only EPC traffic, S1/session, GTP, connection-tracking, and clock-synchronization tools.
+- Added searchable activity logs, log-type filters, and a redacted activity-log download.
+- Added an optional outbound PBX gateway for confirmed voice announcements and text dispatch, plus SIP readiness checks and clear IMS/VoLTE guidance.
+
 ## 0.4.3
 
 - Aligned LTE with the Baiamonte AIS and ADS-B visual system across desktop and mobile Home Assistant views.

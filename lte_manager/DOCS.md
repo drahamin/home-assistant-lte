@@ -7,7 +7,7 @@
 3. Install **Baiamonte LTE** and start it.
 4. Enable **Show in sidebar**. Optionally enable **Automatic updates** on the Info page.
 
-The initial values already point to EPC `192.168.1.151` and Nokia eNodeB `192.168.1.100`. Both devices and Home Assistant must have a route to Baiamonte’s internal `192.168.1.0/24` LTE network.
+Set the EPC and Nokia eNodeB addresses in the add-on configuration before first use. The public defaults use the documentation-only `192.0.2.0/24` range so private estate infrastructure is not published. Existing Home Assistant options are preserved during updates.
 
 ## Nokia commissioning
 
@@ -15,8 +15,8 @@ Connect the MAIN antenna to MAIN and the diversity antenna to DIV before enablin
 
 In Site Manager, verify:
 
-- eNodeB management address: `192.168.1.100`
-- MME/S1 target: `192.168.1.151`, SCTP port `36412`
+- eNodeB management address: the address configured for your estate radio
+- MME/S1 target: the configured EPC address, SCTP port `36412`
 - MCC, MNC, TAC, and LTE band match the EPC, SIMs, license, and authorized spectrum
 - GPS is locked and alarms are clear before enabling RF
 
@@ -58,5 +58,24 @@ The SIM workbench calculates Milenage OPc from K and OP using `OPc = AES-128(K, 
 ## Availability alerts
 
 The app samples EPC and radio reachability every minute and retains 30 days of connection history. On the Overview page, choose which offline conditions should notify Home Assistant, how many failed checks trigger an alert, and the minimum repeat interval. A recovery notification replaces the offline notification when service returns.
+
+## Network visibility and troubleshooting
+
+The Overview page distinguishes measured reachability from end-to-end verification. EPC, S1, MongoDB, Nokia management, SSH, DNS, site Internet, routing, UE data, and the optional communications gateway each have their own state. **Not verified** means the app does not have enough evidence; it does not mean the service is working or failed.
+
+Network Care includes allowlisted tools for known service ports, container routes, DNS/uplink checks, inventory readiness, and incident history. With trusted EPC SSH access it also provides read-only core-process, interface, firewall, traffic-counter, S1/session, time-sync, and journal views. Arbitrary shell commands are not accepted. Activity can be searched by type and downloaded; support bundles and exports exclude subscriber authentication secrets and communications tokens.
+
+## Optional outbound voice and text
+
+The app can send a confirmed outbound request to a separately operated PBX gateway. Configure these Home Assistant app options and restart:
+
+- `communications_enabled`: enable only after the gateway is ready
+- `communications_gateway_url`: HTTP(S) endpoint that accepts JSON fields `kind`, `to`, `message`, and `source`
+- `communications_gateway_token`: optional bearer token, stored as a protected app option and never returned to the browser or support bundle
+- `sip_gateway_host`, `sip_gateway_port`, `sip_transport`: optional TCP/TLS reachability check for the PBX or SIP proxy
+
+Each dispatch requires typing `SEND`. The activity log records only that the configured gateway accepted a voice or text request; it does not record the recipient or message body. The gateway is responsible for authentication, rate limits, emergency-number blocking, provider rules, and delivery reporting.
+
+This feature is not a native VoLTE/IMS implementation. Native handset dialer calls and carrier-style SMS require an IMS core, IMS-capable SIM/UE provisioning, a supported EPC, and a lawful SIP/PSTN or SMS interconnect. App-based SIP clients can use the LTE data connection without native VoLTE.
 
 Only operate radio equipment on frequencies, power levels, and locations you are authorized to use.

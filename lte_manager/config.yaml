@@ -1,5 +1,5 @@
 name: Baiamonte LTE
-version: 0.4.3
+version: 0.5.0
 slug: lte_lab_manager
 description: Control Baiamonte's internal LTE EPC, Nokia eNodeB, UEs, and programmable test SIMs.
 startup: application
@@ -27,12 +27,12 @@ map:
   - type: addon_config
     read_only: false
 options:
-  epc_host: 192.168.1.151
-  bts_host: 192.168.1.100
+  epc_host: 192.0.2.151
+  bts_host: 192.0.2.100
   epc_type: nextepc
-  mongodb_uri: mongodb://192.168.1.151:27017/nextepc
+  mongodb_uri: mongodb://192.0.2.151:27017/nextepc
   apn: internet
-  ue_subnet: 45.45.0.0/16
+  ue_subnet: 10.45.0.0/16
   epc_uplink_interface: eth0
   epc_routing_management_enabled: false
   epc_ssh_user: root
@@ -41,6 +41,12 @@ options:
   mnc: "01"
   tac: 1
   sim_programming_enabled: false
+  communications_enabled: false
+  communications_gateway_url: ""
+  communications_gateway_token: ""
+  sip_gateway_host: ""
+  sip_gateway_port: 5060
+  sip_transport: tcp
 schema:
   epc_host: str
   bts_host: str
@@ -56,3 +62,9 @@ schema:
   mnc: str
   tac: int
   sim_programming_enabled: bool
+  communications_enabled: bool
+  communications_gateway_url: str
+  communications_gateway_token: password
+  sip_gateway_host: str
+  sip_gateway_port: port
+  sip_transport: list(tcp|tls)
