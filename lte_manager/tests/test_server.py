@@ -84,6 +84,54 @@ class AppTests(unittest.TestCase):
         self.assertIn("SAFE NETWORK TOOLKIT", page)
         self.assertIn("PBX voice &amp; text gateway", page)
         self.assertIn("Traffic &amp; connection gauges", page)
+        self.assertIn('id="theme-toggle"', page)
+        self.assertIn('prefers-color-scheme:dark', page)
+        physical = page.split('id="nokia-physical-connections"', 1)[1].split('</article>', 1)[0]
+        self.assertNotIn('type="checkbox"', physical)
+        self.assertIn("MAIN antenna", physical)
+        self.assertIn("Diversity antenna", physical)
+        self.assertIn('id="poll-bts"', page)
+        self.assertIn('id="open-bts-management"', page)
+        self.assertIn('id="check-bts-path"', page)
+        self.assertIn('id="download-bts-status"', page)
+
+    def test_commissioning_context_identifies_supported_nokia_access(self):
+        path = Path(self.temp.name) / "commissioning-access-test.xml"
+        path.write_text("""<raml><managedObject>
+            <p name="oamTls">forced</p><p name="omsTls">forced</p>
+            <p name="serviceAccountSshStatus">disabled</p>
+            <p name="primBackhaulPort">EIF2 (port B)</p>
+            <p name="lmtPort">EIF1 (port A)</p>
+            <p name="oamIpAddr">192.168.99.99</p>
+        </managedObject></raml>""", encoding="utf-8")
+        try:
+            data = self.server.commissioning_context()
+            self.assertTrue(data["valid"])
+            self.assertEqual(data["access"]["method"], "HTTPS OAM / Nokia BTS Site Manager")
+            self.assertTrue(data["access"]["tls_required"])
+            self.assertFalse(data["access"]["ssh_enabled"])
+            self.assertNotIn("oamIpAddr", data["fields"])
+            self.assertNotIn("192.168.99.99", str(data))
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_nokia_status_is_read_only_and_reports_management_signals(self):
+        original = self.server.settings
+        try:
+            self.server.settings = lambda: {"bts_host": "192.0.2.100", "epc_host": "192.0.2.151"}
+            with patch.object(self.server, "ping_check", return_value=True), \
+                 patch.object(self.server, "tls_status", return_value={"online": True, "latency_ms": 4,
+                     "protocol": "TLSv1.2", "cipher": "TEST", "certificate_sha256": "AA" * 32}), \
+                 patch.object(self.server, "tcp_check", return_value={"online": False, "latency_ms": None}), \
+                 patch.object(self.server, "sctp_check", return_value={"online": True, "latency_ms": 3}), \
+                 patch.object(self.server, "commissioning_context", return_value={"available": False, "fields": {}}):
+                data = self.client.get("/api/bts/status").get_json()
+            self.assertTrue(data["reachable"])
+            self.assertTrue(data["management"]["https"]["online"])
+            self.assertTrue(data["s1_target"]["online"])
+            self.assertFalse(data["licensed_status"]["available"])
+        finally:
+            self.server.settings = original
 
     def test_network_visibility_has_actionable_status_lights(self):
         with patch.object(self.server, "ping_check", return_value=True), \

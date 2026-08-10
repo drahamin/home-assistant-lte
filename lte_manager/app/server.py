@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import io
 import json
 import ipaddress
@@ -7,6 +8,7 @@ import re
 import secrets
 import shutil
 import socket
+import ssl
 import sqlite3
 import subprocess
 import tempfile
@@ -14,6 +16,7 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
+import xml.etree.ElementTree as ET
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -168,6 +171,74 @@ def known_port_checks():
     s1 = sctp_check(cfg["epc_host"])
     targets.insert(1, {"id": "s1", "name": "S1AP / SCTP", "host": cfg["epc_host"], "port": 36412, **s1})
     return targets
+
+
+def tls_status(host, port=443):
+    started = time.monotonic()
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    try:
+        with socket.create_connection((host, port), timeout=2.0) as raw:
+            with context.wrap_socket(raw, server_hostname=host) as connection:
+                certificate = connection.getpeercert(binary_form=True) or b""
+                cipher = connection.cipher()
+                return {"online": True, "latency_ms": round((time.monotonic() - started) * 1000),
+                        "protocol": connection.version(), "cipher": cipher[0] if cipher else None,
+                        "certificate_sha256": hashlib.sha256(certificate).hexdigest().upper() if certificate else None}
+    except (OSError, ssl.SSLError):
+        return {"online": False, "latency_ms": None, "protocol": None, "cipher": None,
+                "certificate_sha256": None}
+
+
+def commissioning_context():
+    files = sorted(CONFIG_DIR.glob("commissioning-*"), key=lambda path: path.stat().st_mtime, reverse=True)
+    if not files:
+        return {"available": False, "fields": {}}
+    path = files[0]
+    wanted = {"activeSWReleaseVersion": "Software release", "gnssControlMode": "GNSS mode",
+              "oamTls": "OAM TLS", "omsTls": "OMS TLS",
+              "primBackhaulPort": "Primary backhaul", "lmtPort": "Local management port",
+              "reportingIntervalPm": "PM reporting", "serviceAccountSshStatus": "Service SSH",
+              "s1LinkStatus": "S1 link in backup", "idleSessionTimeWebUI": "Web UI idle timeout",
+              "icmpResponseEnabled": "ICMP response", "actRemoteSyslogTransmission": "Remote syslog",
+              "actTemperatureReport": "Temperature reporting"}
+    fields = {}
+    try:
+        for element in ET.parse(path).iter():
+            name = element.attrib.get("name")
+            if name in wanted and name not in fields and element.text:
+                fields[name] = {"label": wanted[name], "value": element.text.strip()[:120]}
+    except (OSError, ET.ParseError):
+        return {"available": True, "file": path.name.removeprefix("commissioning-"),
+                "valid": False, "fields": {}}
+    values = {name: field["value"].lower() for name, field in fields.items()}
+    tls_required = values.get("oamTls") == "forced"
+    ssh_enabled = values.get("serviceAccountSshStatus") not in {None, "disabled", "false"}
+    return {"available": True, "file": path.name.removeprefix("commissioning-"),
+            "valid": True, "fields": fields,
+            "access": {"method": "HTTPS OAM / Nokia BTS Site Manager" if tls_required else "Nokia BTS Site Manager",
+                       "tls_required": tls_required, "ssh_enabled": ssh_enabled,
+                       "snmp_configured": False,
+                       "detail": "The commissioning backup requires OAM TLS and disables service-account SSH. No SNMP management configuration was found."}}
+
+
+def nokia_status():
+    cfg = settings()
+    host = str(cfg["bts_host"])
+    ping = ping_check(host)
+    https = tls_status(host)
+    http = tcp_check(host, 80, timeout=1.2)
+    ssh = tcp_check(host, 22, timeout=1.2)
+    s1 = sctp_check(str(cfg["epc_host"]))
+    reachable = bool(ping or https["online"] or http["online"])
+    return {"sampled_at": int(time.time()), "host": host, "reachable": reachable,
+            "software_expected": "FLF21", "ping": {"online": bool(ping)},
+            "management": {"https": https, "http": http, "ssh": ssh},
+            "s1_target": {"host": str(cfg["epc_host"]), "port": 36412, **s1},
+            "commissioning": commissioning_context(),
+            "licensed_status": {"available": False,
+                "detail": "GPS lock, RF transmission, temperature, and active alarms require Nokia BTS Site Manager, a licensed status export, or documented Nokia management OIDs/API."}}
 
 
 def route_to_host(host):
@@ -1194,6 +1265,11 @@ def list_subscribers():
     with db() as conn:
         rows = conn.execute("SELECT imsi,name,zone,device_type,critical,notes,apn,msisdn,created_at FROM subscribers ORDER BY zone,name").fetchall()
     return jsonify([dict(r) for r in rows])
+
+
+@app.get("/api/bts/status")
+def bts_status_api():
+    return jsonify(nokia_status())
 
 
 @app.post("/api/subscribers")
