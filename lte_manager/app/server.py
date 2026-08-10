@@ -92,6 +92,11 @@ def db():
         target TEXT PRIMARY KEY, failures INTEGER NOT NULL DEFAULT 0,
         active INTEGER NOT NULL DEFAULT 0, last_notified INTEGER NOT NULL DEFAULT 0
     )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS pending_registrations (
+        imsi TEXT PRIMARY KEY, apn TEXT NOT NULL DEFAULT '', cause TEXT NOT NULL,
+        source TEXT NOT NULL, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 1
+    )""")
     try:
         yield conn
         conn.commit()
@@ -926,9 +931,11 @@ def epc_console_run():
             raise ValueError("Choose one of the available read-only EPC console tools")
         cfg, output = run_epc_script(action["script"], timeout=20)
         output = output[-48_000:] if output else "Command completed with no output."
+        captured = record_failed_registrations(output, "EPC recent logs") if action_id == "logs" else []
         event("console", f"Ran read-only EPC console tool: {action['label']}")
         return jsonify({"ok": True, "action": action_id, "label": action["label"],
-                        "host": cfg["host"], "output": output, "checked_at": int(time.time())})
+                        "host": cfg["host"], "output": output, "checked_at": int(time.time()),
+                        "pending_registrations_found": len(captured)})
     except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -1150,6 +1157,51 @@ def analyze_core_log(text):
     return findings
 
 
+def failed_registration_candidates(text):
+    """Extract only explicit missing-subscriber failures; never infer SIM secrets."""
+    lines = str(text).splitlines()
+    candidates = {}
+    missing_pattern = re.compile(
+        r"cannot\s+find.{0,80}imsi|imsi.{0,80}(?:not\s+found|unknown\s+subscriber)|"
+        r"subscriber.{0,80}(?:not\s+found|missing|unknown)|no\s+subscriber.{0,80}imsi|"
+        r"diameter.{0,80}(?:user[_ -]?unknown|5001)", re.IGNORECASE)
+    imsi_pattern = re.compile(r"\bIMSI(?:[-_ ]?[0-9]*)?\s*[:=\[]\s*([0-9]{5,15})\b", re.IGNORECASE)
+    apn_pattern = re.compile(r"\b(?:APN|DNN)\s*[:=\[]\s*([A-Za-z0-9][A-Za-z0-9._-]{0,99})", re.IGNORECASE)
+    for index, line in enumerate(lines):
+        window = " ".join(lines[max(0, index - 2):min(len(lines), index + 3)])
+        if not missing_pattern.search(window):
+            continue
+        for match in imsi_pattern.finditer(window):
+            imsi = match.group(1)
+            if not IMSI_RE.fullmatch(imsi):
+                continue
+            apn_match = apn_pattern.search(window)
+            candidates[imsi] = {"imsi": imsi, "apn": apn_match.group(1) if apn_match else "",
+                                "cause": "Subscriber missing from EPC"}
+    return list(candidates.values())
+
+
+def record_failed_registrations(text, source):
+    candidates = failed_registration_candidates(text)
+    if not candidates:
+        return []
+    now = int(time.time())
+    safe_source = re.sub(r"[^A-Za-z0-9 ._()-]", "_", str(source))[:120] or "EPC log"
+    with db() as conn:
+        registered = {row[0] for row in conn.execute("SELECT imsi FROM subscribers")}
+        for item in candidates:
+            if item["imsi"] in registered:
+                continue
+            conn.execute("""INSERT INTO pending_registrations
+                (imsi,apn,cause,source,first_seen,last_seen,attempts) VALUES(?,?,?,?,?,?,1)
+                ON CONFLICT(imsi) DO UPDATE SET
+                    apn=CASE WHEN excluded.apn!='' THEN excluded.apn ELSE pending_registrations.apn END,
+                    cause=excluded.cause,source=excluded.source,last_seen=excluded.last_seen,
+                    attempts=pending_registrations.attempts+1""",
+                         (item["imsi"], item["apn"], item["cause"], safe_source, now, now))
+    return [item for item in candidates if item["imsi"] not in registered]
+
+
 def calculate_opc(k, op):
     k, op = str(k).strip().upper(), str(op).strip().upper()
     for name, value in (("K", k), ("OP", op)):
@@ -1265,6 +1317,53 @@ def list_subscribers():
     with db() as conn:
         rows = conn.execute("SELECT imsi,name,zone,device_type,critical,notes,apn,msisdn,created_at FROM subscribers ORDER BY zone,name").fetchall()
     return jsonify([dict(r) for r in rows])
+
+
+@app.get("/api/registrations/pending")
+def list_pending_registrations():
+    with db() as conn:
+        rows = conn.execute("""SELECT imsi,apn,cause,source,first_seen,last_seen,attempts
+                             FROM pending_registrations ORDER BY last_seen DESC""").fetchall()
+    return jsonify([dict(row) for row in rows])
+
+
+@app.post("/api/registrations/pending/<imsi>/approve")
+def approve_pending_registration(imsi):
+    body = request.get_json(silent=True) or {}
+    try:
+        if not IMSI_RE.fullmatch(imsi) or str(body.get("confirm", "")) != imsi:
+            raise ValueError("Confirm the exact pending IMSI before approval")
+        with db() as conn:
+            pending = conn.execute("SELECT imsi,apn FROM pending_registrations WHERE imsi=?", (imsi,)).fetchone()
+        if not pending:
+            raise ValueError("This registration is no longer pending")
+        body["imsi"] = imsi
+        if not str(body.get("apn", "")).strip():
+            body["apn"] = pending["apn"] or settings()["apn"]
+        sub = validate_subscriber(body)
+        result = provision_mongo(sub)
+        with db() as conn:
+            conn.execute("INSERT OR REPLACE INTO subscribers(imsi,name,k,opc,amf,apn,msisdn,zone,device_type,critical,notes,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (sub["imsi"], sub["name"], sub["k"], sub["opc"], sub["amf"], sub["apn"], sub["msisdn"],
+                          sub["zone"], sub["device_type"], int(sub["critical"]), sub["notes"], int(time.time())))
+            conn.execute("DELETE FROM pending_registrations WHERE imsi=?", (imsi,))
+        event("subscriber", f"Approved pending UE {imsi} as {sub['name']} — {result}")
+        return jsonify({"ok": True, "message": result}), 201
+    except (ValueError, PyMongoError) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.delete("/api/registrations/pending/<imsi>")
+def dismiss_pending_registration(imsi):
+    body = request.get_json(silent=True) or {}
+    if not IMSI_RE.fullmatch(imsi) or str(body.get("confirm", "")) != imsi:
+        return jsonify({"error": "Confirm the exact pending IMSI before dismissal"}), 400
+    with db() as conn:
+        removed = conn.execute("DELETE FROM pending_registrations WHERE imsi=?", (imsi,)).rowcount
+    if not removed:
+        return jsonify({"error": "This registration is no longer pending"}), 404
+    event("subscriber", f"Dismissed pending registration {imsi}")
+    return jsonify({"ok": True})
 
 
 @app.get("/api/bts/status")
@@ -1554,8 +1653,10 @@ def analyze_log_upload():
         return jsonify({"error": "Log file must be 2 MB or smaller"}), 400
     text = raw.decode("utf-8", errors="replace")
     findings = analyze_core_log(text)
+    pending = record_failed_registrations(text, f"Uploaded {Path(upload.filename).name}")
     event("log", f"Analyzed {Path(upload.filename).name}: {len(findings)} issue patterns found")
-    return jsonify({"findings": findings, "lines": len(text.splitlines()), "name": Path(upload.filename).name})
+    return jsonify({"findings": findings, "lines": len(text.splitlines()), "name": Path(upload.filename).name,
+                    "pending_registrations_found": len(pending)})
 
 
 @app.get("/api/support-bundle")

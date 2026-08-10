@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.3
+
+- Added a pending-registration approval queue for explicit unknown-subscriber failures found in uploaded or remotely inspected EPC logs.
+- Added administrator review and provisioning from both Estate Devices and Network Care.
+- Preserves only safe attach metadata such as IMSI, requested APN, failure cause, source, timestamps, and observation count; SIM authentication secrets are never inferred or captured from logs.
+- Requires the administrator to confirm the exact IMSI and supply matching K, OPc, and AMF values before provisioning.
+- Added dismissal controls and prevents authentication failures for existing profiles from being treated as new subscriber requests.
+
 ## 0.5.2
 
 - Added a light/dark appearance control to the app header.
