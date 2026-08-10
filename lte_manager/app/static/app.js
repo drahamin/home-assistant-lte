@@ -9,6 +9,16 @@ let activeZone='All zones';
 let activeType='All roles';
 let deviceSearch='';
 
+function applyTheme(theme,persist=false){
+  const dark=theme==='dark';document.documentElement.dataset.theme=dark?'dark':'light';
+  $('#theme-toggle').setAttribute('aria-pressed',String(dark));$('#theme-toggle').setAttribute('aria-label',dark?'Use light mode':'Use dark mode');
+  $('#theme-icon').setAttribute('href',dark?'#i-sun':'#i-moon');$('#theme-label').textContent=dark?'Light':'Dark';
+  document.querySelector('meta[name="theme-color"]').content=dark?'#11100e':'#f2eee4';
+  if(persist)try{localStorage.setItem('baiamonte-lte-theme',dark?'dark':'light')}catch(e){}
+}
+applyTheme(document.documentElement.dataset.theme);
+$('#theme-toggle').onclick=()=>applyTheme(document.documentElement.dataset.theme==='dark'?'light':'dark',true);
+
 function secureFieldsMarkup(compact=false){return securityFields.filter(([name])=>!compact||name!=='msisdn').map(([name,label,placeholder])=>`<div class="field"><label>${label}</label><input name="${name}" placeholder="${placeholder}" value="${['amf','apn'].includes(name)?placeholder:''}" ${['k','opc'].includes(name)?'type="password" autocomplete="off"':''}></div>`).join('')}
 function fieldMarkup(compact=false){
   if(compact)return `<div class="field"><label>DEVICE NAME</label><input name="name" placeholder="North gate camera"></div>${secureFieldsMarkup(true)}`;

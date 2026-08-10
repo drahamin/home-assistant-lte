@@ -7,6 +7,8 @@
 3. Install **Baiamonte LTE** and start it.
 4. Enable **Show in sidebar**. Optionally enable **Automatic updates** on the Info page.
 
+Use the moon/sun button in the app header to switch between light and dark appearance. On the first visit the app follows the device preference; afterward the selection is remembered separately in each browser or Home Assistant companion app.
+
 Set the EPC and Nokia eNodeB addresses in the add-on configuration before first use. The public defaults use the documentation-only `192.0.2.0/24` range so private estate infrastructure is not published. Existing Home Assistant options are preserved during updates.
 
 ## Nokia commissioning

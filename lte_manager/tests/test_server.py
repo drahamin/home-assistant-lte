@@ -84,6 +84,8 @@ class AppTests(unittest.TestCase):
         self.assertIn("SAFE NETWORK TOOLKIT", page)
         self.assertIn("PBX voice &amp; text gateway", page)
         self.assertIn("Traffic &amp; connection gauges", page)
+        self.assertIn('id="theme-toggle"', page)
+        self.assertIn('prefers-color-scheme:dark', page)
 
     def test_network_visibility_has_actionable_status_lights(self):
         with patch.object(self.server, "ping_check", return_value=True), \

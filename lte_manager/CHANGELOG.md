@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.2
+
+- Added a light/dark appearance control to the app header.
+- Uses the device color-scheme preference on first visit and remembers an explicit choice in that browser.
+- Added a vineyard-toned dark palette across gauges, panels, forms, tables, charts, dialogs, tools, and mobile navigation.
+
 ## 0.5.1
 
 - Added subscriber traffic and connection gauges to the Overview page.
