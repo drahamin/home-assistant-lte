@@ -1366,6 +1366,46 @@ def dismiss_pending_registration(imsi):
     return jsonify({"ok": True})
 
 
+@app.post("/api/simulations/roaming")
+def simulate_roaming_attach():
+    scenario = str((request.get_json(silent=True) or {}).get("scenario", "authorized"))
+    allowed = {"authorized", "no_peer", "roaming_denied", "auth_failed", "data_failed"}
+    if scenario not in allowed:
+        return jsonify({"error": "Choose an available roaming simulation scenario"}), 400
+    failed_at = {"no_peer": 2, "roaming_denied": 3, "auth_failed": 4, "data_failed": 6}.get(scenario)
+    definitions = [
+        ("UE identity", "Synthetic IMSI 001010000009999 presented on a test PLMN"),
+        ("Visited MME", "External home PLMN detected; local provisioning bypassed"),
+        ("Diameter route", "Authorized home-HSS peer selected"),
+        ("Home HSS policy", "Roaming accepted and EPS authentication vectors returned"),
+        ("EPS-AKA", "Synthetic UE response validated against the returned vector"),
+        ("Default bearer", "Roaming subscription and test APN applied"),
+        ("Data path", "Synthetic DNS, HTTPS, and return traffic completed"),
+    ]
+    failures = {
+        "no_peer": "No authorized Diameter/S6a home-HSS peer is configured",
+        "roaming_denied": "The simulated home HSS rejected roaming for this subscription",
+        "auth_failed": "The synthetic UE response did not match the authentication vector",
+        "data_failed": "Authentication succeeded, but the simulated data breakout had no return path",
+    }
+    steps = []
+    for index, (label, detail) in enumerate(definitions):
+        if failed_at is not None and index == failed_at:
+            steps.append({"label": label, "state": "failed", "detail": failures[scenario]})
+        elif failed_at is not None and index > failed_at:
+            steps.append({"label": label, "state": "blocked", "detail": "Not attempted after the previous simulated failure"})
+        else:
+            steps.append({"label": label, "state": "passed", "detail": detail})
+    success = failed_at is None
+    event("simulation", f"Ran offline roaming lab scenario: {scenario}")
+    return jsonify({"simulation": True, "scenario": scenario, "success": success,
+                    "identity": {"imsi": "001010000009999", "home_plmn": "001/01 TEST",
+                                 "visited_plmn": "001/02 TEST", "subscription": "Synthetic external-carrier data"},
+                    "steps": steps,
+                    "summary": "Synthetic roaming authentication and data bearer completed" if success else failures[scenario],
+                    "notice": "Offline simulation only. No radio transmission, AT&T/FirstNet identity, carrier endpoint, HSS, or live EPC was used."})
+
+
 @app.get("/api/bts/status")
 def bts_status_api():
     return jsonify(nokia_status())
