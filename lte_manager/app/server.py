@@ -59,6 +59,7 @@ def settings():
         "epc_uplink_interface": "eth0",
         "epc_routing_management_enabled": False, "epc_ssh_user": "root", "epc_ssh_port": 22,
         "sim_programming_enabled": False, "communications_enabled": False,
+        "sim_reader_name": "", "sim_reader_index": 0, "sim_reader_protocol": "auto",
         "communications_gateway_url": "", "communications_gateway_token": "",
         "sip_gateway_host": "", "sip_gateway_port": 5060, "sip_transport": "tcp",
     }
@@ -1514,6 +1515,48 @@ def calculate_opc(k, op):
     return bytes(a ^ b for a, b in zip(result.stdout, bytes.fromhex(op))).hex().upper()
 
 
+def luhn_check_digit(value):
+    digits = [int(char) for char in str(value)]
+    total = 0
+    parity = (len(digits) + 1) % 2
+    for index, digit in enumerate(digits):
+        if index % 2 == parity:
+            digit *= 2
+            if digit > 9:
+                digit -= 9
+        total += digit
+    return str((10 - total % 10) % 10)
+
+
+def generate_sim_profile():
+    cfg = settings()
+    mcc, mnc = str(cfg["mcc"]), str(cfg["mnc"])
+    if not re.fullmatch(r"\d{3}", mcc) or not re.fullmatch(r"\d{2,3}", mnc):
+        raise ValueError("Configure a valid MCC and two- or three-digit MNC before generating a subscriber")
+    prefix = mcc + mnc
+    with db() as conn:
+        used = {row["imsi"] for row in conn.execute("SELECT imsi FROM subscribers UNION SELECT imsi FROM sim_inventory")}
+    imsi = ""
+    for _ in range(100):
+        candidate = prefix + "".join(str(secrets.randbelow(10)) for _ in range(15 - len(prefix)))
+        if candidate not in used:
+            imsi = candidate
+            break
+    if not imsi:
+        raise ValueError("Could not allocate a unique IMSI; try again")
+    iccid_base = "89" + mcc + mnc
+    iccid_base += "".join(str(secrets.randbelow(10)) for _ in range(18 - len(iccid_base)))
+    k, op = secrets.token_hex(16).upper(), secrets.token_hex(16).upper()
+    return {"imsi": imsi, "iccid": iccid_base + luhn_check_digit(iccid_base),
+            "k": k, "op": op, "opc": calculate_opc(k, op), "amf": "8000",
+            "pin1": "".join(str(secrets.randbelow(10)) for _ in range(4)),
+            "puk1": "".join(str(secrets.randbelow(10)) for _ in range(8)),
+            "apn": str(cfg["apn"]), "mcc": mcc, "mnc": mnc, "plmn": f"{mcc}-{mnc}",
+            "mnc_length": len(mnc), "access_class": int(cfg["access_class"]), "stored": False,
+            "iccid_note": "Programming candidate; use the physical card read-back ICCID when the vendor preassigns it.",
+            "secret_note": "Authentication and card values are returned only to this browser and are not logged."}
+
+
 def validate_subscriber(body):
     values = {k: str(body.get(k, "")).strip() for k in ("imsi", "name", "k", "opc", "amf", "apn", "msisdn", "zone")}
     values["zone"] = values["zone"][:40] or "Unassigned"
@@ -1926,7 +1969,8 @@ def upload_commissioning():
 
 
 def sim_reader_status():
-    tool = shutil.which("pySim-shell.py") or shutil.which("pySim-shell") or shutil.which("pySim-prog.py")
+    shell_tool = shutil.which("pySim-shell.py") or shutil.which("pySim-shell")
+    writer_tool = shutil.which("pySim-prog.py") or shutil.which("pySim-prog")
     detected = []
     try:
         from smartcard.System import readers
@@ -1934,14 +1978,112 @@ def sim_reader_status():
     except Exception:
         # The PC/SC service may still be starting or no USB reader may be attached.
         pass
-    enabled = bool(settings()["sim_programming_enabled"])
-    return {"enabled": enabled, "pysim": bool(tool), "usb_visible": Path("/dev/bus/usb").exists(),
-            "readers": detected, "ready": bool(tool and detected and enabled)}
+    cfg = settings()
+    enabled = bool(cfg["sim_programming_enabled"])
+    requested_name = str(cfg["sim_reader_name"]).strip()
+    selected = next((name for name in detected if requested_name.lower() in name.lower()), "") if requested_name else ""
+    if not selected and detected:
+        index = min(max(int(cfg["sim_reader_index"]), 0), len(detected) - 1)
+        selected = detected[index]
+    return {"enabled": enabled, "pysim": bool(shell_tool or writer_tool),
+            "pysim_shell": bool(shell_tool), "pysim_writer": bool(writer_tool),
+            "usb_visible": Path("/dev/bus/usb").exists(), "readers": detected, "selected_reader": selected,
+            "reader_name": requested_name, "reader_index": int(cfg["sim_reader_index"]),
+            "protocol": str(cfg["sim_reader_protocol"]), "read_ready": bool(detected and enabled),
+            "write_ready": bool(writer_tool and detected and enabled),
+            "ready": bool(detected and enabled)}
+
+
+def _decode_swapped_bcd(data):
+    return "".join(f"{byte:02X}"[1] + f"{byte:02X}"[0] for byte in data).rstrip("F")
+
+
+def read_sim_card():
+    if not settings()["sim_programming_enabled"]:
+        raise ValueError("Enable sim_programming_enabled in Home Assistant before accessing the USB reader")
+    try:
+        from smartcard.System import readers
+    except Exception as exc:
+        raise ValueError("PC/SC support is unavailable in this app image") from exc
+    devices = readers()
+    if not devices:
+        raise ValueError("No PC/SC SIM reader was detected")
+    cfg = settings()
+    requested_name = str(cfg["sim_reader_name"]).strip()
+    selected = next((device for device in devices if requested_name.lower() in str(device).lower()), None) if requested_name else None
+    if selected is None:
+        selected = devices[min(max(int(cfg["sim_reader_index"]), 0), len(devices) - 1)]
+    connection = selected.createConnection()
+    try:
+        protocol = str(cfg["sim_reader_protocol"])
+        if protocol == "T0":
+            from smartcard.CardConnection import CardConnection
+            connection.connect(protocol=CardConnection.T0_protocol)
+        elif protocol == "T1":
+            from smartcard.CardConnection import CardConnection
+            connection.connect(protocol=CardConnection.T1_protocol)
+        else:
+            connection.connect()
+        atr = bytes(connection.getATR()).hex().upper()
+        def transmit(apdu):
+            data, sw1, sw2 = connection.transmit(apdu)
+            if sw1 == 0x6C:
+                data, sw1, sw2 = connection.transmit(apdu[:-1] + [sw2])
+            if sw1 in {0x61, 0x9F}:
+                extra, sw1, sw2 = connection.transmit([0x00, 0xC0, 0x00, 0x00, sw2])
+                data.extend(extra)
+            if sw1 not in {0x90, 0x91}:
+                raise ValueError(f"Card returned {sw1:02X}{sw2:02X}")
+            return bytes(data)
+        def select(fid):
+            transmit([0x00, 0xA4, 0x00, 0x0C, 0x02, int(fid[:2], 16), int(fid[2:], 16)])
+        def read_file(path):
+            select("3F00")
+            for fid in path:
+                select(fid)
+            return transmit([0x00, 0xB0, 0x00, 0x00, 0x00])
+        files, errors = {}, {}
+        definitions = {"iccid": ([], "2FE2"), "imsi": (["7F20"], "6F07"),
+                       "administrative_data": (["7F20"], "6FAD"), "access_class": (["7F20"], "6F78"),
+                       "preferred_plmns": (["7F20"], "6F60"), "forbidden_plmns": (["7F20"], "6F7B"),
+                       "location": (["7F20"], "6F7E")}
+        for name, (parents, fid) in definitions.items():
+            try:
+                raw = read_file([*parents, fid])
+                files[name] = raw.hex().upper()
+            except ValueError as exc:
+                errors[name] = str(exc)
+        iccid = _decode_swapped_bcd(bytes.fromhex(files["iccid"])) if files.get("iccid") else ""
+        imsi = ""
+        if files.get("imsi"):
+            raw = bytes.fromhex(files["imsi"])
+            decoded = _decode_swapped_bcd(raw[1:]) if len(raw) > 1 else ""
+            imsi = decoded[1:] if decoded and decoded[0] in "189" else decoded
+        return {"reader": str(selected), "atr": atr, "iccid": iccid, "imsi": imsi,
+                "files": files, "errors": errors, "read_only": True,
+                "note": "Protected authentication keys are not readable from a USIM."}
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(f"SIM read failed: {str(exc)[:180]}") from exc
 
 
 @app.get("/api/sim/readers")
 def sim_readers():
     return jsonify(sim_reader_status())
+
+
+@app.post("/api/sim/card/read")
+def sim_card_read():
+    body = request.get_json(silent=True) or {}
+    if body.get("confirm") != "READ":
+        return jsonify({"error": "Confirm the read-only card inspection with READ"}), 400
+    try:
+        result = read_sim_card()
+        event("sim", "Read non-secret identity and network files from the inserted SIM")
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
 
 @app.get("/api/sim/production-plan")
@@ -2065,6 +2207,17 @@ def sim_test_values():
                     "warning": "Use only with a programmable test SIM you own."})
 
 
+@app.post("/api/sim/profile/generate")
+def sim_profile_generate():
+    body = request.get_json(silent=True) or {}
+    if body.get("confirm") != "GENERATE":
+        return jsonify({"error": "Confirm profile generation with GENERATE"}), 400
+    try:
+        return jsonify(generate_sim_profile())
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
 @app.get("/api/logs")
 def logs():
     limit = min(max(request.args.get("limit", 200, type=int), 10), 1000)
@@ -2156,7 +2309,10 @@ def sim_script():
         "# Store securely. This file contains subscriber authentication material.",
         f"Device: {sub['name']}", f"Role: {sub['device_type']}", f"Zone: {sub['zone']}",
         f"ICCID: {iccid or 'Record the printed/card-read ICCID'}", f"IMSI: {sub['imsi']}",
-        f"K: {sub['k']}", f"OPc: {sub['opc']}", f"AMF: {sub['amf']}",
+        f"K: {sub['k']}", f"OP: {str(body.get('op', '')).strip() or 'Not retained; OPc is authoritative'}",
+        f"OPc: {sub['opc']}", f"AMF: {sub['amf']}",
+        f"PIN1: {str(body.get('pin1', '')).strip() or 'Use card-vendor value'}",
+        f"PUK1: {str(body.get('puk1', '')).strip() or 'Use card-vendor value'}",
         f"Home PLMN: {cfg['mcc']}-{cfg['mnc']}", f"APN: {sub['apn']}", f"TAC: {cfg['tac']}",
         "",
         "USIM PROGRAMMING REVIEW",

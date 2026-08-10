@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.2
+
+- Added one-tap generation of a unique PLMN-matching IMSI, K, OP, OPc, AMF, PIN, PUK, APN, and an ICCID programming candidate for owned programmable USIMs.
+- Added read-only PC/SC card inspection for ICCID, IMSI, ATR, administrative data, access class, PLMN selectors, forbidden networks, and location data.
+- Added local private-profile import and a guarded replacement-card copy workflow without claiming protected USIM authentication keys can be extracted.
+- Added Home Assistant reader name, reader index, and T=0/T=1 protocol configuration plus separate reader/writer discovery lights.
+- Added a live SIM commissioning-process strip and compacted the requested radio, network-health, gauge, physical-connection, PLMN, and guided-handoff sections.
+- Added subtle animated state lights, gauge breathing, and staged card entrances with reduced-motion support.
+
 ## 0.6.1
 
 - Added a filtered Nokia operations feed for cell, RF, GNSS, synchronization, S1/MME, active-UE, temperature, VSWR, channel, software, alarm, and event data.

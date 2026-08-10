@@ -170,7 +170,7 @@ class AppTests(unittest.TestCase):
         physical = page.split('id="nokia-physical-connections"', 1)[1].split('</article>', 1)[0]
         self.assertNotIn('type="checkbox"', physical)
         self.assertIn("MAIN antenna", physical)
-        self.assertIn("Diversity antenna", physical)
+        self.assertIn("Diversity", physical)
         self.assertIn('id="poll-bts"', page)
         self.assertIn('id="open-bts-management"', page)
         self.assertIn('id="check-bts-path"', page)
@@ -185,6 +185,13 @@ class AppTests(unittest.TestCase):
         self.assertIn('id="provision-sim-subscriber"', page)
         self.assertIn('id="confirm-sim-subscriber"', page)
         self.assertIn('id="sim-inventory"', page)
+        self.assertIn('id="generate-sim-profile"', page)
+        self.assertIn('id="read-sim-card"', page)
+        self.assertIn('id="import-sim-profile"', page)
+        self.assertIn('id="copy-sim-profile"', page)
+        self.assertIn('id="sim-read-light"', page)
+        self.assertIn('id="sim-write-light"', page)
+        self.assertIn('id="sim-card-process"', page)
         self.assertIn("Complete PLMN and USIM policy", page)
 
     def test_commissioning_context_identifies_supported_nokia_access(self):
@@ -427,6 +434,30 @@ class AppTests(unittest.TestCase):
         self.assertEqual(len(data["op"]), 32)
         self.assertEqual(len(data["opc"]), 32)
         self.assertFalse(data["stored"])
+
+    def test_complete_sim_profile_generator_uses_configured_plmn(self):
+        response = self.client.post("/api/sim/profile/generate", json={"confirm": "GENERATE"})
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertTrue(data["imsi"].startswith("00101"))
+        self.assertEqual(len(data["imsi"]), 15)
+        self.assertEqual(len(data["iccid"]), 19)
+        self.assertEqual(len(data["k"]), 32)
+        self.assertEqual(len(data["op"]), 32)
+        self.assertEqual(len(data["opc"]), 32)
+        self.assertEqual(data["amf"], "8000")
+        self.assertFalse(data["stored"])
+
+    def test_complete_sim_profile_generation_requires_confirmation(self):
+        response = self.client.post("/api/sim/profile/generate", json={})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("GENERATE", response.get_json()["error"])
+
+    def test_sim_card_read_requires_opt_in_and_confirmation(self):
+        self.assertEqual(self.client.post("/api/sim/card/read", json={}).status_code, 400)
+        response = self.client.post("/api/sim/card/read", json={"confirm": "READ"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("sim_programming_enabled", response.get_json()["error"])
 
     def test_routing_apply_requires_exact_confirmation(self):
         original = self.server.settings
