@@ -1,5 +1,5 @@
 name: Baiamonte LTE
-version: 0.6.1
+version: 0.6.2
 slug: lte_lab_manager
 description: Operate Baiamonte's production LTE data network for estate cameras, IoT devices, programmable SIMs, EPC, and Nokia radio.
 startup: application
@@ -77,6 +77,9 @@ options:
   preferred_plmns: "001-01:E-UTRAN"
   forbidden_plmns: ""
   sim_programming_enabled: false
+  sim_reader_name: ""
+  sim_reader_index: 0
+  sim_reader_protocol: auto
   communications_enabled: false
   communications_gateway_url: ""
   communications_gateway_token: ""
@@ -134,6 +137,9 @@ schema:
   preferred_plmns: str
   forbidden_plmns: str
   sim_programming_enabled: bool
+  sim_reader_name: str
+  sim_reader_index: int
+  sim_reader_protocol: list(auto|T0|T1)
   communications_enabled: bool
   communications_gateway_url: str
   communications_gateway_token: password

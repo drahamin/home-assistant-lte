@@ -48,6 +48,12 @@ The SIM page is a production workflow for owned programmable USIMs used by Baiam
 
 The page supports USB CCID readers through PC/SC, reports the detected reader and pySim readiness, provisions the matching subscriber to NextEPC/Open5GS, and checks live acceptance signals. Direct physical writes remain disabled by default because the ADM credential, protected authentication storage, file layout, and supported pySim commands depend on the programmable USIM vendor. Baiamonte LTE never guesses an ADM key. A non-CCID programmer may require its vendor driver.
 
+Set `sim_programming_enabled` to permit USB card access. `sim_reader_name` optionally selects a reader by a case-insensitive name fragment; otherwise `sim_reader_index` selects the detected PC/SC reader. `sim_reader_protocol` can remain `auto` or force `T0`/`T1` for a card that requires it. The workbench reports reader and writer capability separately. A CCID reader is sufficient for the built-in read-only inspection, while physical writer readiness additionally requires a supported pySim writer and the card vendor’s ADM credential.
+
+**Auto-generate** creates a unique 15-digit IMSI under the configured MCC/MNC, random K and OP, derived Milenage OPc, AMF, PIN, PUK, APN, and a Luhn-checked ICCID programming candidate. These secrets are returned only to the browser. Use the physical card’s read-back ICCID when its identity is factory-assigned. **Import private profile** parses the downloaded Baiamonte worksheet locally in the browser without uploading it. **Prepare replacement copy** retains a loaded private identity for an owned replacement card and clears the ICCID so the new card can be read; do not operate two cards with the same identity simultaneously.
+
+**Read inserted SIM** sends only read/select APDUs and reports ATR, ICCID, IMSI, administrative data, access class, preferred/forbidden PLMN files, and cached location when the card exposes them. Authentication keys are protected by the USIM and cannot be recovered by this tool. The app does not brute-force PIN, PUK, or ADM credentials.
+
 Program and verify the LTE USIM network-selection files EF.PLMNwAcT, EF.OPLMNwAcT, and EF.HPLMNwAcT. Production commissioning also reviews EF.AD, EF.ACC, EF.FPLMN, EF.EPSLOCI, and EF.LOCI. Clear stale forbidden and cached-location entries before the first attach when supported by the card vendor.
 
 ## Subscriber Internet access
