@@ -38,6 +38,12 @@ When an uploaded EPC log or the guarded **Recent EPC logs** tool contains an exp
 
 An administrator can review the request from **Estate devices** or **Network care**, verify the IMSI against the physical SIM inventory, and provision it using the matching K, OPc, AMF, APN, device role, and vineyard zone. The exact IMSI must be confirmed by the approval request. LTE attach signaling does not reveal K or OPc, so those values must come from the secure SIM programming record. Provisioning is never automatic. Authentication failures for existing subscribers remain troubleshooting findings and are not turned into new-subscriber approvals.
 
+### Offline roaming lab
+
+Network Care includes an offline external-carrier roaming simulator. It uses synthetic `001/01` and `001/02` test PLMNs to model visited-MME identification, an authorized Diameter/S6a route, home-HSS policy, EPS-AKA, default-bearer creation, and data breakout. The administrator can select a successful flow or inject a missing peer, roaming denial, authentication mismatch, or data return-path failure.
+
+The lab is educational and diagnostic only. It never contacts AT&T or FirstNet, never broadcasts a carrier identity, never uses a retail IMSI, and never changes the Nokia or live EPC. A successful simulation does not authorize an external SIM; live roaming still requires a carrier agreement and authenticated home-HSS connectivity.
+
 The SIM page supports USB CCID readers through PC/SC, validates a profile, reports the detected reader name, and generates a reviewable pySim worksheet. Physical writing remains disabled by default. Enable it only when a compatible USB reader and programmable test SIM are attached. The exact administrative key and command sequence depend on the SIM vendor. A non-CCID programmer may require its vendor driver.
 
 ## Subscriber Internet access

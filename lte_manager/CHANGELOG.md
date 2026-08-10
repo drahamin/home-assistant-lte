@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.4
+
+- Added an offline roaming-data simulator for external-carrier and public-safety-style attach flows.
+- Models visited-MME detection, authorized Diameter routing, home-HSS policy, EPS-AKA, bearer creation, and subscriber data breakout.
+- Includes controlled success, missing-peer, roaming-denied, authentication-failure, and data-path-failure scenarios.
+- Uses only synthetic test identities and never transmits a carrier PLMN, contacts AT&T/FirstNet, or modifies the live EPC.
+
 ## 0.5.3
 
 - Added a pending-registration approval queue for explicit unknown-subscriber failures found in uploaded or remotely inspected EPC logs.

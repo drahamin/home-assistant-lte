@@ -77,6 +77,20 @@ class AppTests(unittest.TestCase):
                 conn.execute("DELETE FROM subscribers WHERE imsi=?", (imsi,))
             self.server.settings = original
 
+    def test_roaming_lab_uses_only_synthetic_offline_identifiers(self):
+        success = self.client.post("/api/simulations/roaming", json={"scenario": "authorized"})
+        self.assertEqual(success.status_code, 200)
+        data = success.get_json()
+        self.assertTrue(data["simulation"])
+        self.assertTrue(data["success"])
+        self.assertIn("TEST", data["identity"]["home_plmn"])
+        self.assertIn("No radio transmission", data["notice"])
+        failed = self.client.post("/api/simulations/roaming", json={"scenario": "no_peer"}).get_json()
+        self.assertFalse(failed["success"])
+        self.assertEqual(failed["steps"][2]["state"], "failed")
+        rejected = self.client.post("/api/simulations/roaming", json={"scenario": "live-att"})
+        self.assertEqual(rejected.status_code, 400)
+
     def test_diagnostics_are_allowlisted(self):
         with patch.object(self.server, "ping_check", return_value=True), \
              patch.object(self.server, "tcp_check", return_value={"online": True, "latency_ms": 1}), \
@@ -138,6 +152,8 @@ class AppTests(unittest.TestCase):
         self.assertIn('id="download-bts-status"', page)
         self.assertIn('id="pending-registrations"', page)
         self.assertIn('id="troubleshooting-pending"', page)
+        self.assertIn('id="run-roaming-simulation"', page)
+        self.assertIn("External-carrier data simulation", page)
 
     def test_commissioning_context_identifies_supported_nokia_access(self):
         path = Path(self.temp.name) / "commissioning-access-test.xml"
