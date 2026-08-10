@@ -38,7 +38,8 @@ class AppTests(unittest.TestCase):
     def test_diagnostics_are_allowlisted(self):
         with patch.object(self.server, "ping_check", return_value=True), \
              patch.object(self.server, "tcp_check", return_value={"online": True, "latency_ms": 1}), \
-             patch.object(self.server, "sctp_check", return_value={"online": True, "latency_ms": 1}):
+             patch.object(self.server, "sctp_check", return_value={"online": True, "latency_ms": 1}), \
+             patch.object(self.server, "dns_check", return_value={"online": True, "latency_ms": 1, "addresses": ["1.2.3.4"]}):
             response = self.client.post("/api/diagnostics/run")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["failures"], 0)
@@ -80,6 +81,84 @@ class AppTests(unittest.TestCase):
         page = self.client.get("/").get_data(as_text=True)
         self.assertIn("static/suite.css", page)
         self.assertIn("Estate device inventory", page)
+        self.assertIn("SAFE NETWORK TOOLKIT", page)
+        self.assertIn("PBX voice &amp; text gateway", page)
+
+    def test_network_visibility_has_actionable_status_lights(self):
+        with patch.object(self.server, "ping_check", return_value=True), \
+             patch.object(self.server, "tcp_check", return_value={"online": True, "latency_ms": 2}), \
+             patch.object(self.server, "sctp_check", return_value={"online": True, "latency_ms": 3}), \
+             patch.object(self.server, "dns_check", return_value={"online": True, "latency_ms": 4, "addresses": ["1.2.3.4"]}):
+            data = self.client.get("/api/network/visibility").get_json()
+        ids = {item["id"] for item in data["lights"]}
+        self.assertTrue({"epc", "s1", "database", "radio", "bts_admin", "ssh", "dns", "uplink", "routing", "ue_data", "communications"}.issubset(ids))
+        self.assertIsInstance(data["actions"], list)
+        self.assertIn("health_score", data)
+
+    def test_network_tools_are_allowlisted(self):
+        rejected = self.client.post("/api/tools/run", json={"action": "shell"})
+        self.assertEqual(rejected.status_code, 400)
+        with patch.object(self.server, "tcp_check", return_value={"online": True, "latency_ms": 1}), \
+             patch.object(self.server, "sctp_check", return_value={"online": True, "latency_ms": 1}):
+            accepted = self.client.post("/api/tools/run", json={"action": "ports"})
+        self.assertEqual(accepted.status_code, 200)
+        self.assertEqual(accepted.get_json()["kind"], "ports")
+        self.assertEqual(len(accepted.get_json()["rows"]), 5)
+
+    def test_incident_history_detects_outage_and_restore(self):
+        with self.server.db() as conn:
+            conn.execute("DELETE FROM status_history")
+            now = int(self.server.time.time())
+            conn.execute("INSERT INTO status_history VALUES(?,?,?,?,?)", (now - 120, 1, 1, 1, 1))
+            conn.execute("INSERT INTO status_history VALUES(?,?,?,?,?)", (now - 60, 0, 1, 1, 1))
+            conn.execute("INSERT INTO status_history VALUES(?,?,?,?,?)", (now, 1, 1, 1, 1))
+        incidents = self.client.get("/api/incidents?hours=6").get_json()["incidents"]
+        self.assertEqual(incidents[0]["state"], "restored")
+        self.assertEqual(incidents[0]["duration_seconds"], 60)
+
+    def test_logs_support_filtering_and_safe_download(self):
+        self.server.event("tool", "Known ports checked")
+        self.server.event("subscriber", "Device updated")
+        rows = self.client.get("/api/logs?kind=tool&search=ports").get_json()
+        self.assertTrue(rows)
+        self.assertTrue(all(row["kind"] == "tool" for row in rows))
+        exported = self.client.get("/api/logs/export")
+        self.assertEqual(exported.status_code, 200)
+        self.assertIn("Known ports checked", exported.get_data(as_text=True))
+
+    def test_communications_require_opt_in_and_confirmation(self):
+        rejected = self.client.post("/api/communications/send", json={"kind": "text", "to": "+15551234567", "message": "Test"})
+        self.assertEqual(rejected.status_code, 400)
+        original = self.server.settings
+        try:
+            self.server.settings = lambda: {
+                "communications_enabled": True, "communications_gateway_url": "https://pbx.example/dispatch",
+                "communications_gateway_token": "secret", "sip_gateway_host": "", "sip_gateway_port": 5060,
+                "sip_transport": "tcp",
+            }
+            with patch.object(self.server.urllib.request, "urlopen") as urlopen:
+                response = urlopen.return_value.__enter__.return_value
+                response.status = 202
+                response.read.return_value = b"queued"
+                accepted = self.client.post("/api/communications/send", json={"confirm": "SEND", "kind": "voice", "to": "+15551234567", "message": "Irrigation alert"})
+            self.assertEqual(accepted.status_code, 200)
+            self.assertEqual(accepted.get_json()["gateway_response"], "queued")
+            request = urlopen.call_args.args[0]
+            self.assertEqual(request.headers["Authorization"], "Bearer secret")
+        finally:
+            self.server.settings = original
+
+    def test_communications_secrets_are_never_public(self):
+        original = self.server.settings
+        try:
+            self.server.settings = lambda: {"mongodb_uri": "mongodb://secret", "communications_gateway_url": "https://pbx.example/private", "communications_gateway_token": "top-secret", "epc_host": "192.0.2.151"}
+            public = self.server.public_settings()
+            self.assertNotIn("mongodb_uri", public)
+            self.assertNotIn("communications_gateway_url", public)
+            self.assertNotIn("communications_gateway_token", public)
+            self.assertEqual(public["epc_host"], "192.0.2.151")
+        finally:
+            self.server.settings = original
 
     def test_history_returns_uptime(self):
         with self.server.db() as conn:
@@ -104,9 +183,9 @@ class AppTests(unittest.TestCase):
     def test_internet_plan_is_safe_and_specific(self):
         original = self.server.settings
         try:
-            self.server.settings = lambda: {"ue_subnet": "45.45.0.0/16", "epc_uplink_interface": "eth0", "apn": "internet"}
+            self.server.settings = lambda: {"ue_subnet": "10.45.0.0/16", "epc_uplink_interface": "eth0", "apn": "internet"}
             data = self.client.get("/api/internet-plan").get_json()
-            self.assertEqual(data["subnet"], "45.45.0.0/16")
+            self.assertEqual(data["subnet"], "10.45.0.0/16")
             self.assertIn("test", data["steps"][-1].lower())
         finally:
             self.server.settings = original
@@ -131,31 +210,31 @@ class AppTests(unittest.TestCase):
         original = self.server.settings
         try:
             self.server.settings = lambda: {
-                "epc_routing_management_enabled": True, "epc_host": "192.168.1.151",
-                "epc_ssh_user": "root", "epc_ssh_port": 22, "ue_subnet": "45.45.0.0/16",
+                "epc_routing_management_enabled": True, "epc_host": "192.0.2.151",
+                "epc_ssh_user": "root", "epc_ssh_port": 22, "ue_subnet": "10.45.0.0/16",
                 "epc_uplink_interface": "eth0", "apn": "internet",
             }
             response = self.client.post("/api/epc-routing/apply", json={"confirm": "yes"})
             self.assertEqual(response.status_code, 400)
-            self.assertIn("APPLY 192.168.1.151", response.get_json()["error"])
+            self.assertIn("APPLY 192.0.2.151", response.get_json()["error"])
         finally:
             self.server.settings = original
 
     def test_routing_script_is_scoped_and_reversible(self):
-        cfg = {"subnet": "45.45.0.0/16", "interface": "eth0"}
+        cfg = {"subnet": "10.45.0.0/16", "interface": "eth0"}
         apply_script = self.server.routing_apply_script(cfg)
         rollback_script = self.server.routing_rollback_script(cfg)
         self.assertIn("Managed by Baiamonte LTE", apply_script)
         self.assertIn("baiamonte-lte-routing.service", apply_script)
         self.assertIn("previous_forwarding", rollback_script)
-        self.assertIn("45.45.0.0/16", rollback_script)
+        self.assertIn("10.45.0.0/16", rollback_script)
 
     def test_routing_key_generator_returns_only_public_key(self):
         original = self.server.settings
         try:
             self.server.settings = lambda: {
-                "epc_routing_management_enabled": True, "epc_host": "192.168.1.151",
-                "epc_ssh_user": "root", "epc_ssh_port": 22, "ue_subnet": "45.45.0.0/16",
+                "epc_routing_management_enabled": True, "epc_host": "192.0.2.151",
+                "epc_ssh_user": "root", "epc_ssh_port": 22, "ue_subnet": "10.45.0.0/16",
                 "epc_uplink_interface": "eth0", "apn": "internet",
             }
             response = self.client.post("/api/epc-routing/key/generate", json={"confirm": "REPLACE KEY"})
@@ -170,8 +249,8 @@ class AppTests(unittest.TestCase):
         generated_key = Path(self.temp.name) / "id_ed25519_upload_test"
         try:
             self.server.settings = lambda: {
-                "epc_routing_management_enabled": True, "epc_host": "192.168.1.151",
-                "epc_ssh_user": "root", "epc_ssh_port": 22, "ue_subnet": "45.45.0.0/16",
+                "epc_routing_management_enabled": True, "epc_host": "192.0.2.151",
+                "epc_ssh_user": "root", "epc_ssh_port": 22, "ue_subnet": "10.45.0.0/16",
                 "epc_uplink_interface": "eth0", "apn": "internet",
             }
             subprocess.run(
@@ -192,8 +271,8 @@ class AppTests(unittest.TestCase):
         original = self.server.settings
         try:
             self.server.settings = lambda: {
-                "epc_routing_management_enabled": True, "epc_host": "192.168.1.151",
-                "epc_ssh_user": "root", "epc_ssh_port": 22, "ue_subnet": "45.45.0.0/16",
+                "epc_routing_management_enabled": True, "epc_host": "192.0.2.151",
+                "epc_ssh_user": "root", "epc_ssh_port": 22, "ue_subnet": "10.45.0.0/16",
                 "epc_uplink_interface": "eth0", "apn": "internet",
             }
             payload = {"file": (io.BytesIO(b"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test\n"), "id_ed25519.pub")}
@@ -210,8 +289,8 @@ class AppTests(unittest.TestCase):
         original = self.server.settings
         try:
             self.server.settings = lambda: {
-                "epc_routing_management_enabled": True, "epc_host": "192.168.1.151",
-                "epc_ssh_user": "root", "epc_ssh_port": 22, "ue_subnet": "45.45.0.0/16",
+                "epc_routing_management_enabled": True, "epc_host": "192.0.2.151",
+                "epc_ssh_user": "root", "epc_ssh_port": 22, "ue_subnet": "10.45.0.0/16",
                 "epc_uplink_interface": "eth0", "apn": "internet",
             }
             with patch.object(self.server.socket, "create_connection", side_effect=socket.timeout):
@@ -226,13 +305,13 @@ class AppTests(unittest.TestCase):
         original = self.server.settings
         try:
             self.server.settings = lambda: {
-                "epc_routing_management_enabled": True, "epc_host": "192.168.1.151",
-                "epc_ssh_user": "root", "epc_ssh_port": 22, "ue_subnet": "45.45.0.0/16",
+                "epc_routing_management_enabled": True, "epc_host": "192.0.2.151",
+                "epc_ssh_user": "root", "epc_ssh_port": 22, "ue_subnet": "10.45.0.0/16",
                 "epc_uplink_interface": "eth0", "apn": "internet",
             }
             rejected = self.client.post("/api/epc-console/run", json={"action": "rm-everything"})
             self.assertEqual(rejected.status_code, 400)
-            with patch.object(self.server, "run_epc_script", return_value=({"host": "192.168.1.151"}, "healthy")) as run:
+            with patch.object(self.server, "run_epc_script", return_value=({"host": "192.0.2.151"}, "healthy")) as run:
                 accepted = self.client.post("/api/epc-console/run", json={"action": "system"})
             self.assertEqual(accepted.status_code, 200)
             self.assertEqual(accepted.get_json()["output"], "healthy")

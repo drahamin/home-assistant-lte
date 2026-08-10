@@ -30,16 +30,19 @@ DB_PATH = DATA_DIR / "lte-manager.db"
 APP_LOG = DATA_DIR / "lte-manager.log"
 HEX_RE = re.compile(r"^[0-9A-Fa-f]+$")
 IMSI_RE = re.compile(r"^[0-9]{5,15}$")
+SECRET_SETTING_KEYS = {"mongodb_uri", "communications_gateway_url", "communications_gateway_token"}
 
 
 def settings():
     defaults = {
-        "epc_host": "192.168.1.151", "bts_host": "192.168.1.100",
-        "epc_type": "nextepc", "mongodb_uri": "mongodb://192.168.1.151:27017/nextepc",
+        "epc_host": "192.0.2.151", "bts_host": "192.0.2.100",
+        "epc_type": "nextepc", "mongodb_uri": "mongodb://192.0.2.151:27017/nextepc",
         "apn": "internet", "mcc": "001", "mnc": "01", "tac": 1,
-        "ue_subnet": "45.45.0.0/16", "epc_uplink_interface": "eth0",
+        "ue_subnet": "10.45.0.0/16", "epc_uplink_interface": "eth0",
         "epc_routing_management_enabled": False, "epc_ssh_user": "root", "epc_ssh_port": 22,
-        "sim_programming_enabled": False,
+        "sim_programming_enabled": False, "communications_enabled": False,
+        "communications_gateway_url": "", "communications_gateway_token": "",
+        "sip_gateway_host": "", "sip_gateway_port": 5060, "sip_transport": "tcp",
     }
     path = Path(os.getenv("OPTIONS_PATH", "/data/options.json"))
     if path.exists():
@@ -48,6 +51,10 @@ def settings():
         except (OSError, json.JSONDecodeError):
             pass
     return defaults
+
+
+def public_settings():
+    return {key: value for key, value in settings().items() if key not in SECRET_SETTING_KEYS}
 
 
 @contextmanager
@@ -125,6 +132,104 @@ def ping_check(host):
         return result.returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
+
+
+def dns_check():
+    started = time.monotonic()
+    try:
+        addresses = sorted({item[4][0] for item in socket.getaddrinfo("example.com", 443, type=socket.SOCK_STREAM)})
+        return {"online": bool(addresses), "latency_ms": round((time.monotonic() - started) * 1000),
+                "addresses": addresses[:3]}
+    except OSError:
+        return {"online": False, "latency_ms": None, "addresses": []}
+
+
+def app_setting_json(key):
+    with db() as conn:
+        row = conn.execute("SELECT value FROM app_settings WHERE key=?", (key,)).fetchone()
+    if not row:
+        return None
+    try:
+        return json.loads(row["value"])
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def known_port_checks():
+    cfg = settings()
+    targets = [
+        {"id": "epc_ssh", "name": "EPC SSH", "host": cfg["epc_host"], "port": int(cfg.get("epc_ssh_port", 22))},
+        {"id": "mongo", "name": "Subscriber database", "host": cfg["epc_host"], "port": 27017},
+        {"id": "bts_https", "name": "Nokia HTTPS", "host": cfg["bts_host"], "port": 443},
+        {"id": "bts_http", "name": "Nokia HTTP", "host": cfg["bts_host"], "port": 80},
+    ]
+    for target in targets:
+        target.update(tcp_check(target["host"], target["port"]))
+    s1 = sctp_check(cfg["epc_host"])
+    targets.insert(1, {"id": "s1", "name": "S1AP / SCTP", "host": cfg["epc_host"], "port": 36412, **s1})
+    return targets
+
+
+def route_to_host(host):
+    try:
+        result = subprocess.run(["ip", "route", "get", host], capture_output=True, text=True,
+                                timeout=4, check=False)
+        detail = (result.stdout or result.stderr).strip()[:1000]
+        return {"ok": result.returncode == 0, "detail": detail or "No route information returned"}
+    except (OSError, subprocess.TimeoutExpired):
+        return {"ok": False, "detail": "The container route utility is unavailable"}
+
+
+def communications_status():
+    cfg = settings()
+    enabled = bool(cfg.get("communications_enabled"))
+    gateway_url = str(cfg.get("communications_gateway_url", "")).strip()
+    sip_host = str(cfg.get("sip_gateway_host", "")).strip()
+    sip_port = int(cfg.get("sip_gateway_port", 5060))
+    transport = str(cfg.get("sip_transport", "tcp")).lower()
+    valid_url = bool(re.fullmatch(r"https?://[^\s]{3,500}", gateway_url))
+    sip = tcp_check(sip_host, sip_port, timeout=1.2) if sip_host and transport in ("tcp", "tls") else {
+        "online": False, "latency_ms": None}
+    ready = enabled and valid_url
+    return {"enabled": enabled, "ready": ready, "gateway_configured": valid_url,
+            "token_configured": bool(str(cfg.get("communications_gateway_token", "")).strip()),
+            "sip": {"host": sip_host, "port": sip_port, "transport": transport,
+                    "online": sip["online"], "latency_ms": sip.get("latency_ms")},
+            "native_volte": False,
+            "native_volte_note": "Native handset calls and SMS require a separate IMS/VoLTE core. This gateway is for PBX-backed outbound voice announcements and text dispatch."}
+
+
+def dispatch_communication(kind, destination, message):
+    cfg = settings()
+    status = communications_status()
+    if not status["ready"]:
+        raise ValueError("Enable communications and configure the PBX gateway URL in Home Assistant first")
+    if kind not in ("text", "voice"):
+        raise ValueError("Choose text or voice announcement")
+    if not re.fullmatch(r"[+0-9A-Za-z@._:-]{3,80}", destination):
+        raise ValueError("Use a phone number or SIP address containing only safe dialing characters")
+    message = message.strip()
+    if not 1 <= len(message) <= 500:
+        raise ValueError("Message must contain 1–500 characters")
+    payload = json.dumps({"kind": kind, "to": destination, "message": message,
+                          "source": "baiamonte-lte"}).encode()
+    headers = {"Content-Type": "application/json", "User-Agent": "Baiamonte-LTE/1"}
+    token = str(cfg.get("communications_gateway_token", "")).strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(str(cfg["communications_gateway_url"]), data=payload,
+                                 headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=12) as response:
+            response_text = response.read(4096).decode("utf-8", errors="replace").strip()
+            if not 200 <= response.status < 300:
+                raise ValueError(f"Communications gateway returned HTTP {response.status}")
+    except urllib.error.HTTPError as exc:
+        raise ValueError(f"Communications gateway returned HTTP {exc.code}") from exc
+    except (OSError, urllib.error.URLError) as exc:
+        raise ValueError("Communications gateway could not be reached") from exc
+    event("communications", f"Outbound {kind} dispatch accepted by the configured PBX gateway")
+    return {"ok": True, "kind": kind, "accepted": True, "gateway_response": response_text[:500]}
 
 
 ALERT_DEFAULTS = {"epc_enabled": True, "radio_enabled": True, "failure_threshold": 3, "cooldown_minutes": 60}
@@ -221,6 +326,124 @@ def sample_network(process_alerts=False):
     return status
 
 
+def connection_incidents(hours=168, limit=40):
+    since = int(time.time()) - min(max(int(hours), 1), 720) * 3600
+    with db() as conn:
+        rows = [dict(row) for row in conn.execute(
+            "SELECT sampled_at,epc_online,bts_online,s1_online,db_online FROM status_history "
+            "WHERE sampled_at>=? ORDER BY sampled_at", (since,))]
+    labels = {"epc_online": "EPC core", "bts_online": "Nokia radio",
+              "s1_online": "S1 control link", "db_online": "Subscriber database"}
+    incidents, open_events = [], {}
+    previous = rows[0] if rows else None
+    if previous:
+        for key, label in labels.items():
+            if not previous[key]:
+                open_events[key] = previous["sampled_at"]
+                incidents.append({"target": key.removesuffix("_online"), "label": label,
+                                  "state": "offline", "started_at": previous["sampled_at"], "ended_at": None})
+    for row in rows[1:]:
+        for key, label in labels.items():
+            if previous[key] and not row[key]:
+                open_events[key] = row["sampled_at"]
+                incidents.append({"target": key.removesuffix("_online"), "label": label,
+                                  "state": "offline", "started_at": row["sampled_at"], "ended_at": None})
+            elif not previous[key] and row[key]:
+                started = open_events.pop(key, previous["sampled_at"])
+                outage = next((item for item in reversed(incidents)
+                               if item["target"] == key.removesuffix("_online") and
+                               item["state"] == "offline" and item["ended_at"] is None), None)
+                if outage:
+                    outage["ended_at"] = row["sampled_at"]
+                    outage["duration_seconds"] = max(0, row["sampled_at"] - started)
+                incidents.append({"target": key.removesuffix("_online"), "label": label,
+                                  "state": "restored", "started_at": started, "ended_at": row["sampled_at"],
+                                  "duration_seconds": max(0, row["sampled_at"] - started)})
+        previous = row
+    if rows:
+        for key, started in open_events.items():
+            target = key.removesuffix("_online")
+            current = next((item for item in reversed(incidents)
+                            if item["target"] == target and item["state"] == "offline" and item["ended_at"] is None), None)
+            if current:
+                current["duration_seconds"] = max(0, int(time.time()) - started)
+    return list(reversed(incidents[-limit:]))
+
+
+def network_visibility(status=None):
+    cfg = settings()
+    status = status or sample_network()
+    dns = dns_check()
+    internet = tcp_check("1.1.1.1", 443, timeout=1.5)
+    bts_https = tcp_check(cfg["bts_host"], 443)
+    bts_http = tcp_check(cfg["bts_host"], 80)
+    ssh = tcp_check(cfg["epc_host"], int(cfg.get("epc_ssh_port", 22)))
+    route_status = app_setting_json("routing_last_status")
+    route_verified = app_setting_json("routing_last_verified")
+    communications = communications_status()
+    with db() as conn:
+        latest = conn.execute("SELECT MAX(sampled_at) AS sampled_at FROM status_history").fetchone()["sampled_at"]
+        alert_rows = conn.execute("SELECT target,failures,active,last_notified FROM alert_state").fetchall()
+        counts = conn.execute("SELECT COUNT(*) total, SUM(critical) critical, "
+                              "SUM(CASE WHEN zone='Unassigned' THEN 1 ELSE 0 END) unassigned FROM subscribers").fetchone()
+    def light(light_id, label, state, detail, latency=None):
+        return {"id": light_id, "label": label, "state": state, "detail": detail, "latency_ms": latency}
+    routing_state = "online" if route_status and route_status.get("ready") else "offline" if route_status else "unknown"
+    routing_detail = ("Forwarding, NAT, and persistence ready" if routing_state == "online" else
+                      "Last routing check found missing rules" if routing_state == "offline" else "Run Check current routing")
+    ue_state = ("online" if route_verified and route_verified.get("verified") else
+                "offline" if route_verified and route_verified.get("verified") is False else "unknown")
+    ue_detail = ("Subscriber traffic and return packets verified" if ue_state == "online" else
+                 "Last subscriber traffic test failed" if ue_state == "offline" else "Run a live UE traffic test")
+    lights = [
+        light("epc", "EPC core", "online" if status["epc"]["online"] else "offline",
+              f"{cfg['epc_host']} responds" if status["epc"]["online"] else f"No reply from {cfg['epc_host']}"),
+        light("s1", "S1 control", "online" if status["epc"]["s1"]["online"] else "offline",
+              "SCTP 36412 accepting connections" if status["epc"]["s1"]["online"] else "SCTP 36412 closed or filtered",
+              status["epc"]["s1"].get("latency_ms")),
+        light("database", "Subscriber DB", "online" if status["epc"]["database"]["online"] else "offline",
+              "MongoDB reachable" if status["epc"]["database"]["online"] else "MongoDB port 27017 unavailable",
+              status["epc"]["database"].get("latency_ms")),
+        light("radio", "Nokia radio", "online" if status["bts"]["online"] else "offline",
+              f"{cfg['bts_host']} responds" if status["bts"]["online"] else f"No reply from {cfg['bts_host']}"),
+        light("bts_admin", "Radio admin", "online" if bts_https["online"] or bts_http["online"] else "offline",
+              "Nokia web management port reachable" if bts_https["online"] or bts_http["online"] else "HTTP/HTTPS management ports unavailable"),
+        light("ssh", "EPC SSH", "online" if ssh["online"] else "offline",
+              f"Port {cfg.get('epc_ssh_port', 22)} reachable" if ssh["online"] else f"Port {cfg.get('epc_ssh_port', 22)} unavailable",
+              ssh.get("latency_ms")),
+        light("dns", "Estate DNS", "online" if dns["online"] else "offline",
+              "Public names resolve" if dns["online"] else "DNS lookup failed", dns.get("latency_ms")),
+        light("uplink", "Site Internet", "online" if internet["online"] else "offline",
+              "Public HTTPS reachable from app" if internet["online"] else "No public HTTPS route from app", internet.get("latency_ms")),
+        light("routing", "EPC routing", routing_state, routing_detail),
+        light("ue_data", "UE data path", ue_state, ue_detail),
+        light("communications", "Voice & text", "unknown" if not communications["enabled"] else
+              "online" if communications["ready"] and (not communications["sip"]["host"] or communications["sip"]["online"])
+              else "offline",
+              "Optional gateway disabled" if not communications["enabled"] else
+              "PBX dispatch gateway ready" if communications["ready"] and (not communications["sip"]["host"] or communications["sip"]["online"])
+              else "PBX gateway configuration or SIP reachability needs attention"),
+    ]
+    scored = [item for item in lights if item["state"] in ("online", "offline")]
+    score = round(100 * sum(item["state"] == "online" for item in scored) / len(scored)) if scored else None
+    actions = []
+    for item in lights:
+        if item["state"] == "offline":
+            actions.append({"target": item["id"], "title": item["label"], "detail": item["detail"]})
+    if counts["unassigned"]:
+        actions.append({"target": "inventory", "title": "Unassigned devices",
+                        "detail": f"{counts['unassigned']} device(s) need a vineyard zone"})
+    alerts = {row["target"]: {"failures": row["failures"], "active": bool(row["active"]),
+                              "last_notified": row["last_notified"]} for row in alert_rows}
+    return {"sampled_at": int(time.time()), "monitor_sampled_at": latest, "health_score": score,
+            "lights": lights, "actions": actions[:8], "routing": route_status, "ue_verification": route_verified,
+            "alerts": alerts, "incidents": connection_incidents(168, 12),
+            "communications": communications,
+            "inventory": {"total": counts["total"] or 0, "critical": counts["critical"] or 0,
+                          "unassigned": counts["unassigned"] or 0},
+            "home_assistant_ready": bool(os.getenv("SUPERVISOR_TOKEN"))}
+
+
 def diagnostic_checks():
     cfg = settings()
     checks = []
@@ -252,7 +475,7 @@ def diagnostic_checks():
 @app.get("/api/internet-plan")
 def internet_plan():
     cfg = settings()
-    subnet = str(cfg.get("ue_subnet", "45.45.0.0/16"))
+    subnet = str(cfg.get("ue_subnet", "10.45.0.0/16"))
     interface = str(cfg.get("epc_uplink_interface", "eth0"))
     try:
         subnet = str(ipaddress.ip_network(subnet, strict=False))
@@ -421,6 +644,32 @@ echo; echo 'NAT POSTROUTING'; iptables -w 5 -t nat -nvL POSTROUTING 2>/dev/null 
         "label": "Recent EPC logs",
         "script": """set -eu
 journalctl --no-pager -n 160 -u nextepc-mmed -u nextepc-sgwd -u nextepc-pgwd -u nextepc-hssd -u open5gs-mmed -u open5gs-sgwcd -u open5gs-smfd -u open5gs-upfd 2>/dev/null || echo 'No matching systemd journal entries found'
+""",
+    },
+    "traffic": {
+        "label": "LTE traffic counters",
+        "script": """set -eu
+echo 'INTERFACE COUNTERS'; ip -s -brief link 2>/dev/null || ip -s link
+echo; echo 'GTP AND SIP SOCKETS'; ss -H -l -n -u -t 2>/dev/null | grep -E ':(2123|2152|36412|5060|5061)\\b' || echo 'No known LTE/IMS listener found'
+echo; echo 'CONNECTION TRACKING';
+if [ -r /proc/sys/net/netfilter/nf_conntrack_count ]; then printf 'used='; cat /proc/sys/net/netfilter/nf_conntrack_count; printf 'max='; cat /proc/sys/net/netfilter/nf_conntrack_max; else echo 'Connection tracking counters unavailable'; fi
+""",
+    },
+    "sessions": {
+        "label": "S1 and user-plane sessions",
+        "script": """set -eu
+echo 'SCTP ASSOCIATIONS'; ss -H -n -A sctp 2>/dev/null || echo 'SCTP socket view unavailable'
+echo; echo 'GTP KERNEL STATE';
+if command -v ip >/dev/null 2>&1; then ip -details link show type gtp 2>/dev/null || echo 'No kernel GTP interface found'; fi
+echo; echo 'CORE PROCESS AGE'; ps -eo etimes,pid,comm,args --sort=-etimes | grep -E '[n]extepc|[o]pen5gs' || echo 'No core processes found'
+""",
+    },
+    "time": {
+        "label": "Clock and time sync",
+        "script": """set -eu
+echo 'SYSTEM CLOCK'; date -u
+echo; echo 'TIME SYNCHRONIZATION'; timedatectl status 2>/dev/null || true
+if command -v chronyc >/dev/null 2>&1; then echo; chronyc tracking 2>/dev/null || true; fi
 """,
     },
 }
@@ -851,14 +1100,14 @@ def provision_mongo(sub):
 
 @app.get("/")
 def index():
-    public_config = {key: value for key, value in settings().items() if key != "mongodb_uri"}
-    return render_template("index.html", config=public_config)
+    return render_template("index.html", config=public_settings())
 
 
 @app.get("/api/overview")
 def overview():
     cfg = settings()
     status = sample_network()
+    visibility = network_visibility(status)
     with db() as conn:
         ue_count = conn.execute("SELECT COUNT(*) FROM subscribers").fetchone()[0]
         events = [dict(row) for row in conn.execute("SELECT * FROM events ORDER BY id DESC LIMIT 8")]
@@ -879,7 +1128,8 @@ def overview():
     return jsonify({"epc": status["epc"], "bts": status["bts"],
                     "routing": routing, "subscriber_count": ue_count, "events": events,
                     "inventory": inventory,
-                    "config": {k: v for k, v in cfg.items() if k != "mongodb_uri"}})
+                    "visibility": visibility,
+                    "config": {k: v for k, v in cfg.items() if k not in SECRET_SETTING_KEYS}})
 
 
 @app.get("/api/subscribers")
@@ -1001,6 +1251,64 @@ def connection_history():
     return jsonify({"hours": hours, "points": rows, "uptime": {"epc": uptime["epc_online"], "radio": uptime["bts_online"]}})
 
 
+@app.get("/api/network/visibility")
+def network_visibility_api():
+    return jsonify(network_visibility())
+
+
+@app.get("/api/incidents")
+def incidents_api():
+    hours = min(max(request.args.get("hours", 168, type=int), 1), 720)
+    return jsonify({"hours": hours, "incidents": connection_incidents(hours)})
+
+
+@app.post("/api/tools/run")
+def run_network_tool():
+    action = str((request.get_json(silent=True) or {}).get("action", ""))
+    cfg = settings()
+    if action == "ports":
+        result = {"title": "Known service ports", "kind": "ports", "rows": known_port_checks()}
+    elif action == "route":
+        routes = [{"name": "EPC core", "host": cfg["epc_host"], **route_to_host(cfg["epc_host"])},
+                  {"name": "Nokia radio", "host": cfg["bts_host"], **route_to_host(cfg["bts_host"])},
+                  {"name": "Public Internet", "host": "1.1.1.1", **route_to_host("1.1.1.1")}]
+        result = {"title": "Container routing", "kind": "routes", "rows": routes}
+    elif action == "dns":
+        dns, internet = dns_check(), tcp_check("1.1.1.1", 443, timeout=1.5)
+        result = {"title": "DNS and site uplink", "kind": "uplink", "dns": dns, "internet": internet}
+    elif action == "inventory":
+        with db() as conn:
+            rows = [dict(row) for row in conn.execute(
+                "SELECT device_type,COUNT(*) count,SUM(critical) critical,"
+                "SUM(CASE WHEN zone='Unassigned' THEN 1 ELSE 0 END) unassigned "
+                "FROM subscribers GROUP BY device_type ORDER BY count DESC")]
+        result = {"title": "Inventory readiness", "kind": "inventory", "rows": rows}
+    elif action == "incidents":
+        result = {"title": "Recent connectivity incidents", "kind": "incidents",
+                  "rows": connection_incidents(168, 30)}
+    else:
+        return jsonify({"error": "Choose a supported read-only network tool"}), 400
+    event("tool", f"Ran read-only network tool: {result['title']}")
+    return jsonify({"ok": True, "created_at": int(time.time()), **result})
+
+
+@app.get("/api/communications/status")
+def communications_status_api():
+    return jsonify(communications_status())
+
+
+@app.post("/api/communications/send")
+def communications_send_api():
+    body = request.get_json(silent=True) or {}
+    if body.get("confirm") != "SEND":
+        return jsonify({"error": "Confirm each outbound dispatch with SEND"}), 400
+    try:
+        return jsonify(dispatch_communication(str(body.get("kind", "")), str(body.get("to", "")).strip(),
+                                              str(body.get("message", ""))))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
 @app.route("/api/alerts/settings", methods=["GET", "PUT"])
 def alerts_settings_api():
     if request.method == "GET":
@@ -1065,9 +1373,33 @@ def sim_test_values():
 @app.get("/api/logs")
 def logs():
     limit = min(max(request.args.get("limit", 200, type=int), 10), 1000)
+    kind = str(request.args.get("kind", "")).strip().lower()[:24]
+    search = str(request.args.get("search", "")).strip()[:80]
+    where, values = [], []
+    if kind and re.fullmatch(r"[a-z0-9_-]+", kind):
+        where.append("kind=?")
+        values.append(kind)
+    if search:
+        where.append("message LIKE ?")
+        values.append(f"%{search}%")
+    clause = " WHERE " + " AND ".join(where) if where else ""
     with db() as conn:
-        rows = conn.execute("SELECT id,kind,message,created_at FROM events ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        rows = conn.execute(f"SELECT id,kind,message,created_at FROM events{clause} ORDER BY id DESC LIMIT ?",
+                            (*values, limit)).fetchall()
     return jsonify(list(reversed([dict(row) for row in rows])))
+
+
+@app.get("/api/logs/export")
+def export_logs():
+    with db() as conn:
+        rows = conn.execute("SELECT kind,message,created_at FROM events ORDER BY id DESC LIMIT 2000").fetchall()
+    output = io.StringIO()
+    for row in reversed(rows):
+        timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(row["created_at"]))
+        output.write(f"{timestamp} [{row['kind'].upper()}] {row['message']}\n")
+    return app.response_class(output.getvalue(), mimetype="text/plain",
+                              headers={"Content-Disposition": "attachment; filename=baiamonte-lte-activity.log",
+                                       "X-Content-Type-Options": "nosniff"})
 
 
 @app.post("/api/diagnostics/run")
@@ -1075,7 +1407,8 @@ def run_diagnostics():
     results = diagnostic_checks()
     failures = sum(1 for check in results if not check["ok"])
     event("diagnostic", f"Completed {len(results)} checks — {failures} need attention")
-    return jsonify({"checks": results, "failures": failures, "created_at": int(time.time())})
+    return jsonify({"checks": results, "failures": failures, "created_at": int(time.time()),
+                    "visibility": network_visibility()})
 
 
 @app.post("/api/logs/analyze")
@@ -1095,13 +1428,13 @@ def analyze_log_upload():
 @app.get("/api/support-bundle")
 def support_bundle():
     cfg = settings()
-    safe_cfg = {key: value for key, value in cfg.items() if key != "mongodb_uri"}
+    safe_cfg = {key: value for key, value in cfg.items() if key not in SECRET_SETTING_KEYS}
     created = int(time.time())
     path = DATA_DIR / f"lte-support-{created}.zip"
     with db() as conn:
         recent = [dict(row) for row in conn.execute("SELECT kind,message,created_at FROM events ORDER BY id DESC LIMIT 250")]
     report = {"created_at": created, "configuration": safe_cfg, "diagnostics": diagnostic_checks(), "events": recent,
-              "privacy": "MongoDB URI, subscriber keys, OPc values, and commissioning XML are excluded."}
+              "privacy": "MongoDB URI, communications token, subscriber keys, OPc values, and commissioning XML are excluded."}
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("diagnostics.json", json.dumps(report, indent=2))
         archive.writestr("README.txt", "Redacted Baiamonte LTE support bundle. Subscriber secrets and Nokia commissioning data are not included.\n")
