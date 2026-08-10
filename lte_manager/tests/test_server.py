@@ -77,25 +77,44 @@ class AppTests(unittest.TestCase):
                 conn.execute("DELETE FROM subscribers WHERE imsi=?", (imsi,))
             self.server.settings = original
 
-    def test_roaming_lab_uses_only_synthetic_offline_identifiers(self):
-        success = self.client.post("/api/simulations/roaming", json={"scenario": "authorized"})
-        self.assertEqual(success.status_code, 200)
-        data = success.get_json()
-        self.assertTrue(data["simulation"])
-        self.assertTrue(data["success"])
-        self.assertIn("TEST", data["identity"]["home_plmn"])
-        self.assertIn("No radio transmission", data["notice"])
-        self.assertEqual(data["lab"]["radio_mode"], "modeled only — no RF commands issued")
-        self.assertEqual(len(data["infrastructure"]), 6)
-        self.assertEqual(len(data["trace"]), 11)
-        self.assertTrue(all(item["state"] == "online" for item in data["infrastructure"]))
-        self.assertNotIn("att", str(data["lab"]).lower())
-        failed = self.client.post("/api/simulations/roaming", json={"scenario": "no_peer"}).get_json()
-        self.assertFalse(failed["success"])
-        self.assertEqual(failed["steps"][2]["state"], "failed")
-        self.assertEqual(failed["infrastructure"][2]["state"], "failed")
-        rejected = self.client.post("/api/simulations/roaming", json={"scenario": "live-att"})
-        self.assertEqual(rejected.status_code, 400)
+    def test_production_sim_plan_uses_lte_plmn_files_not_prl(self):
+        data = self.client.get("/api/sim/production-plan").get_json()
+        files = {item["file"] for item in data["lte_files"]}
+        self.assertIn("EF.PLMNwAcT / EF.OPLMNwAcT", files)
+        self.assertIn("PRL is a CDMA/3GPP2 file", data["prl_note"])
+        self.assertEqual(len(data["steps"]), 6)
+        self.assertEqual(self.client.post("/api/simulations/roaming", json={}).status_code, 404)
+
+    def test_production_sim_confirmation_separates_registry_attach_and_data(self):
+        imsi = "001010000000080"
+        original = self.server.settings
+        profile = {"imsi": imsi, "name": "Production camera", "device_type": "Camera", "zone": "Estate Gate",
+                   "k": "A" * 32, "opc": "B" * 32, "amf": "8000", "apn": "internet"}
+        network = {"epc": {"online": True, "s1": {"online": True}, "database": {"online": True}},
+                   "bts": {"online": True}}
+        try:
+            self.server.settings = lambda: {"epc_type": "local", "apn": "internet", "mcc": "001", "mnc": "01",
+                                             "tac": 1, "sim_programming_enabled": False}
+            self.assertEqual(self.client.post("/api/subscribers", json=profile).status_code, 201)
+            with patch.object(self.server, "sample_network", return_value=network), \
+                 patch.object(self.server, "routing_config", return_value={"enabled": False}):
+                data = self.client.post("/api/sim/confirm", json={"imsi": imsi}).get_json()
+            self.assertTrue(data["registered"])
+            self.assertFalse(data["attach_confirmed"])
+            self.assertFalse(data["complete"])
+            states = {item["id"]: item["state"] for item in data["checks"]}
+            self.assertEqual(states["registry"], "online")
+            self.assertEqual(states["data"], "unknown")
+            inventory = self.client.get("/api/sim/inventory").get_json()
+            row = next(item for item in inventory if item["imsi"] == imsi)
+            self.assertEqual(row["stage"], "hss_provisioned")
+            self.assertNotIn("k", row)
+            self.assertNotIn("opc", row)
+        finally:
+            with self.server.db() as conn:
+                conn.execute("DELETE FROM subscribers WHERE imsi=?", (imsi,))
+                conn.execute("DELETE FROM sim_inventory WHERE imsi=?", (imsi,))
+            self.server.settings = original
 
     def test_diagnostics_are_allowlisted(self):
         with patch.object(self.server, "ping_check", return_value=True), \
@@ -158,8 +177,12 @@ class AppTests(unittest.TestCase):
         self.assertIn('id="download-bts-status"', page)
         self.assertIn('id="pending-registrations"', page)
         self.assertIn('id="troubleshooting-pending"', page)
-        self.assertIn('id="run-roaming-simulation"', page)
-        self.assertIn("Synthetic roaming infrastructure", page)
+        self.assertNotIn('id="run-roaming-simulation"', page)
+        self.assertNotIn("Synthetic roaming infrastructure", page)
+        self.assertIn('id="provision-sim-subscriber"', page)
+        self.assertIn('id="confirm-sim-subscriber"', page)
+        self.assertIn('id="sim-inventory"', page)
+        self.assertIn("LTE uses PLMN selector files", page)
 
     def test_commissioning_context_identifies_supported_nokia_access(self):
         path = Path(self.temp.name) / "commissioning-access-test.xml"

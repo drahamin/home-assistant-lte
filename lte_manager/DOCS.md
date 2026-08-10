@@ -38,13 +38,13 @@ When an uploaded EPC log or the guarded **Recent EPC logs** tool contains an exp
 
 An administrator can review the request from **Estate devices** or **Network care**, verify the IMSI against the physical SIM inventory, and provision it using the matching K, OPc, AMF, APN, device role, and vineyard zone. The exact IMSI must be confirmed by the approval request. LTE attach signaling does not reveal K or OPc, so those values must come from the secure SIM programming record. Provisioning is never automatic. Authentication failures for existing subscribers remain troubleshooting findings and are not turned into new-subscriber approvals.
 
-### Offline roaming lab
+### Production SIM commissioning
 
-Network Care includes an offline external-carrier roaming simulator. It uses synthetic `001/01` and `001/02` test PLMNs to model visited-MME identification, an authorized Diameter/S6a route, home-HSS policy, EPS-AKA, default-bearer creation, and data breakout. The administrator can select a successful flow or inject a missing peer, roaming denial, authentication mismatch, or data return-path failure.
+The SIM page is a production workflow for owned programmable USIMs used by Baiamonte cameras and IoT devices. It separates identity creation, Milenage credential generation, physical card programming, EPC/HSS provisioning, modem setup, attach observation, and subscriber-data proof. A downloaded private worksheet contains the secure handoff record and a card read-back checklist. Treat that file like a password and retain it only in approved secure storage.
 
-The lab is educational and diagnostic only. It never contacts AT&T or FirstNet, never broadcasts a carrier identity, never uses a retail IMSI, and never changes the Nokia or live EPC. A successful simulation does not authorize an external SIM; live roaming still requires a carrier agreement and authenticated home-HSS connectivity.
+The page supports USB CCID readers through PC/SC, reports the detected reader and pySim readiness, provisions the matching subscriber to NextEPC/Open5GS, and checks live acceptance signals. Direct physical writes remain disabled by default because the ADM credential, protected authentication storage, file layout, and supported pySim commands depend on the programmable USIM vendor. Baiamonte LTE never guesses an ADM key. A non-CCID programmer may require its vendor driver.
 
-The SIM page supports USB CCID readers through PC/SC, validates a profile, reports the detected reader name, and generates a reviewable pySim worksheet. Physical writing remains disabled by default. Enable it only when a compatible USB reader and programmable test SIM are attached. The exact administrative key and command sequence depend on the SIM vendor. A non-CCID programmer may require its vendor driver.
+LTE does not use a CDMA/3GPP2 Preferred Roaming List (PRL). The LTE equivalents are USIM network-selection files such as EF.PLMNwAcT, EF.OPLMNwAcT, and EF.HPLMNwAcT. Production commissioning also reviews EF.AD, EF.ACC, EF.FPLMN, EF.EPSLOCI, and EF.LOCI. Clear stale forbidden and cached-location entries before the first attach when supported by the card vendor.
 
 ## Subscriber Internet access
 

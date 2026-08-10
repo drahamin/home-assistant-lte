@@ -1,7 +1,7 @@
 name: Baiamonte LTE
-version: 0.5.5
+version: 0.6.0
 slug: lte_lab_manager
-description: Control Baiamonte's internal LTE EPC, Nokia eNodeB, UEs, and programmable test SIMs.
+description: Operate Baiamonte's production LTE data network for estate cameras, IoT devices, programmable SIMs, EPC, and Nokia radio.
 startup: application
 boot: auto
 init: false
