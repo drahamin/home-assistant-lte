@@ -1,3 +1,4 @@
+import base64
 import csv
 import hashlib
 import io
@@ -14,6 +15,7 @@ import subprocess
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 import xml.etree.ElementTree as ET
@@ -33,15 +35,28 @@ DB_PATH = DATA_DIR / "lte-manager.db"
 APP_LOG = DATA_DIR / "lte-manager.log"
 HEX_RE = re.compile(r"^[0-9A-Fa-f]+$")
 IMSI_RE = re.compile(r"^[0-9]{5,15}$")
-SECRET_SETTING_KEYS = {"mongodb_uri", "communications_gateway_url", "communications_gateway_token"}
+SECRET_SETTING_KEYS = {"mongodb_uri", "communications_gateway_url", "communications_gateway_token", "nokia_api_password"}
 
 
 def settings():
     defaults = {
         "epc_host": "192.0.2.151", "bts_host": "192.0.2.100",
+        "nokia_api_enabled": False, "nokia_api_base_url": "https://192.0.2.100",
+        "nokia_api_status_path": "/", "nokia_api_cells_path": "", "nokia_api_alarms_path": "",
+        "nokia_api_events_path": "", "nokia_api_username": "", "nokia_api_password": "",
+        "nokia_api_tls_verify": False, "nokia_control_enabled": False, "nokia_api_control_path": "",
         "epc_type": "nextepc", "mongodb_uri": "mongodb://192.0.2.151:27017/nextepc",
         "apn": "internet", "mcc": "001", "mnc": "01", "tac": 1,
-        "ue_subnet": "10.45.0.0/16", "epc_uplink_interface": "eth0",
+        "network_name": "Baiamonte LTE", "mme_group_id": 1, "mme_code": 1,
+        "s1ap_port": 36412, "gtpu_port": 2152, "enb_id": 1, "cell_id": 1,
+        "pci": 1, "lte_band": 2, "dl_earfcn": 900, "ul_earfcn": 18900,
+        "channel_bandwidth_mhz": 10, "tx_power_dbm": 0, "access_class": 0,
+        "home_plmn_only": True, "preferred_plmns": "001-01:E-UTRAN", "forbidden_plmns": "",
+        "ue_subnet": "10.45.0.0/16", "ue_gateway": "10.45.0.1",
+        "subscriber_ip_version": "ipv4", "subscriber_mtu": 1420,
+        "subscriber_dns_primary": "1.1.1.1", "subscriber_dns_secondary": "9.9.9.9",
+        "default_qci": 9, "ambr_downlink_mbps": 25, "ambr_uplink_mbps": 10,
+        "epc_uplink_interface": "eth0",
         "epc_routing_management_enabled": False, "epc_ssh_user": "root", "epc_ssh_port": 22,
         "sim_programming_enabled": False, "communications_enabled": False,
         "communications_gateway_url": "", "communications_gateway_token": "",
@@ -58,6 +73,87 @@ def settings():
 
 def public_settings():
     return {key: value for key, value in settings().items() if key not in SECRET_SETTING_KEYS}
+
+
+LTE_FDD_BANDS = {
+    1: (2110.0, 0, 1920.0, 18000), 2: (1930.0, 600, 1850.0, 18600),
+    3: (1805.0, 1200, 1710.0, 19200), 4: (2110.0, 1950, 1710.0, 19950),
+    5: (869.0, 2400, 824.0, 20400), 7: (2620.0, 2750, 2500.0, 20750),
+    8: (925.0, 3450, 880.0, 21450), 12: (729.0, 5010, 699.0, 23010),
+    13: (746.0, 5180, 777.0, 23180), 14: (758.0, 5280, 788.0, 23280),
+    17: (734.0, 5730, 704.0, 23730), 20: (791.0, 6150, 832.0, 24150),
+    25: (1930.0, 8040, 1850.0, 26040), 26: (859.0, 8690, 814.0, 26690),
+    28: (758.0, 9210, 703.0, 27210),
+}
+
+
+def radio_channel_profile(cfg=None):
+    cfg = cfg or settings()
+    band, dl, ul = int(cfg["lte_band"]), int(cfg["dl_earfcn"]), int(cfg["ul_earfcn"])
+    mapping = LTE_FDD_BANDS.get(band)
+    if not mapping:
+        return {"supported": False, "band": band, "duplex": "Configured by licensed Nokia profile",
+                "dl_earfcn": dl, "ul_earfcn": ul, "bandwidth_mhz": int(cfg["channel_bandwidth_mhz"]),
+                "tx_power_dbm": int(cfg["tx_power_dbm"]),
+                "note": "Frequency conversion is not available for this band; use Nokia Site Manager readback."}
+    dl_low, dl_offset, ul_low, ul_offset = mapping
+    dl_mhz = round(dl_low + 0.1 * (dl - dl_offset), 1)
+    ul_mhz = round(ul_low + 0.1 * (ul - ul_offset), 1)
+    return {"supported": True, "band": band, "duplex": "FDD", "dl_earfcn": dl, "ul_earfcn": ul,
+            "enb_tx_mhz": dl_mhz, "enb_rx_mhz": ul_mhz,
+            "duplex_spacing_mhz": round(abs(dl_mhz - ul_mhz), 1),
+            "bandwidth_mhz": int(cfg["channel_bandwidth_mhz"]), "tx_power_dbm": int(cfg["tx_power_dbm"]),
+            "pci": int(cfg["pci"]), "enb_id": int(cfg["enb_id"]), "cell_id": int(cfg["cell_id"]),
+            "note": "Configured target values; confirm live RF state and measured power in the Nokia operations feed."}
+
+
+def production_network_profile():
+    cfg = settings()
+    checks = []
+    def add(label, ok, detail):
+        checks.append({"label": label, "ok": bool(ok), "detail": detail})
+    mcc, mnc = str(cfg["mcc"]), str(cfg["mnc"])
+    plmn = f"{mcc}-{mnc}"
+    add("PLMN", bool(re.fullmatch(r"\d{3}", mcc) and re.fullmatch(r"\d{2,3}", mnc)),
+        f"{plmn} · MNC length {len(mnc)}")
+    try:
+        subnet = ipaddress.ip_network(str(cfg["ue_subnet"]), strict=False)
+        gateway = ipaddress.ip_address(str(cfg["ue_gateway"]))
+        add("Subscriber pool", gateway in subnet and gateway != subnet.network_address and gateway != subnet.broadcast_address,
+            f"{subnet} · gateway {gateway}")
+    except ValueError:
+        add("Subscriber pool", False, f"Invalid subnet or gateway: {cfg['ue_subnet']} / {cfg['ue_gateway']}")
+    dns_ok = True
+    for value in (cfg["subscriber_dns_primary"], cfg["subscriber_dns_secondary"]):
+        try: ipaddress.ip_address(str(value))
+        except ValueError: dns_ok = False
+    add("Subscriber DNS", dns_ok, f"{cfg['subscriber_dns_primary']} · {cfg['subscriber_dns_secondary']}")
+    add("Cell identity", 0 <= int(cfg["enb_id"]) <= 1048575 and 0 <= int(cfg["cell_id"]) <= 268435455,
+        f"eNB {cfg['enb_id']} · cell {cfg['cell_id']}")
+    add("Physical cell ID", 0 <= int(cfg["pci"]) <= 503, f"PCI {cfg['pci']}")
+    add("Radio channel", 1 <= int(cfg["lte_band"]) <= 88 and int(cfg["dl_earfcn"]) >= 0 and int(cfg["ul_earfcn"]) >= 0,
+        f"Band {cfg['lte_band']} · DL {cfg['dl_earfcn']} · UL {cfg['ul_earfcn']}")
+    add("Channel bandwidth", int(cfg["channel_bandwidth_mhz"]) in {5, 10, 15, 20},
+        f"{cfg['channel_bandwidth_mhz']} MHz")
+    add("RF power target", -50 <= int(cfg["tx_power_dbm"]) <= 50, f"{cfg['tx_power_dbm']} dBm")
+    add("Core identifiers", 0 <= int(cfg["mme_group_id"]) <= 65535 and 0 <= int(cfg["mme_code"]) <= 255,
+        f"MME group {cfg['mme_group_id']} · code {cfg['mme_code']} · TAC {cfg['tac']}")
+    add("Subscriber policy", 1 <= int(cfg["default_qci"]) <= 9 and 1280 <= int(cfg["subscriber_mtu"]) <= 1500,
+        f"QCI {cfg['default_qci']} · MTU {cfg['subscriber_mtu']} · {cfg['subscriber_ip_version']}")
+    preferred = [item.strip() for item in str(cfg["preferred_plmns"]).split(",") if item.strip()]
+    home_preferred = any(item.split(":", 1)[0] == plmn for item in preferred)
+    add("USIM PLMN path", home_preferred, f"Home {plmn} · preferred {', '.join(preferred) or 'none'}")
+    return {"valid": all(item["ok"] for item in checks), "plmn": plmn, "mnc_length": len(mnc),
+            "channel": radio_channel_profile(cfg),
+            "checks": checks, "radio": {key: cfg[key] for key in (
+                "network_name", "enb_id", "cell_id", "pci", "lte_band", "dl_earfcn", "ul_earfcn",
+                "channel_bandwidth_mhz", "tx_power_dbm", "tac", "mme_group_id", "mme_code",
+                "s1ap_port", "gtpu_port")},
+            "subscriber": {key: cfg[key] for key in (
+                "apn", "ue_subnet", "ue_gateway", "subscriber_ip_version", "subscriber_mtu",
+                "subscriber_dns_primary", "subscriber_dns_secondary", "default_qci",
+                "ambr_downlink_mbps", "ambr_uplink_mbps", "access_class", "home_plmn_only",
+                "preferred_plmns", "forbidden_plmns")}}
 
 
 @contextmanager
@@ -202,8 +298,9 @@ def known_port_checks():
     ]
     for target in targets:
         target.update(tcp_check(target["host"], target["port"]))
-    s1 = sctp_check(cfg["epc_host"])
-    targets.insert(1, {"id": "s1", "name": "S1AP / SCTP", "host": cfg["epc_host"], "port": 36412, **s1})
+    s1_port = int(cfg["s1ap_port"])
+    s1 = sctp_check(cfg["epc_host"], s1_port)
+    targets.insert(1, {"id": "s1", "name": "S1AP / SCTP", "host": cfg["epc_host"], "port": s1_port, **s1})
     return targets
 
 
@@ -225,6 +322,172 @@ def tls_status(host, port=443):
                 "certificate_sha256": None}
 
 
+def _nokia_api_request(path, method="GET", json_body=None):
+    cfg = settings()
+    if not cfg["nokia_api_enabled"]:
+        return {"enabled": False, "configured": False, "reachable": False, "authenticated": False,
+                "detail": "Optional Nokia status gateway is disabled"}, b""
+    base = str(cfg["nokia_api_base_url"]).strip().rstrip("/")
+    path = str(path).strip()
+    if not path:
+        return {"enabled": True, "configured": False, "reachable": False, "authenticated": False,
+                "detail": "Endpoint path is not configured"}, b""
+    parsed = urllib.parse.urlparse(base)
+    if parsed.scheme != "https" or parsed.hostname != str(cfg["bts_host"]):
+        return {"enabled": True, "configured": True, "reachable": False, "authenticated": False,
+                "detail": "Nokia API URL must use HTTPS and match the configured BTS host"}, b""
+    if not path.startswith("/") or not re.fullmatch(r"/[A-Za-z0-9_./?=&%-]*", path):
+        return {"enabled": True, "configured": True, "reachable": False, "authenticated": False,
+                "detail": "Nokia endpoint path contains unsupported characters"}, b""
+    if method not in {"GET", "POST"}:
+        return {"enabled": True, "configured": True, "reachable": False, "authenticated": False,
+                "detail": "Unsupported Nokia gateway method"}, b""
+    encoded_body = json.dumps(json_body).encode() if json_body is not None else None
+    headers = {"Accept": "application/json, application/xml, text/plain"}
+    if encoded_body is not None:
+        headers["Content-Type"] = "application/json"
+    request_object = urllib.request.Request(base + path, data=encoded_body, method=method, headers=headers)
+    username, password = str(cfg["nokia_api_username"]), str(cfg["nokia_api_password"])
+    if username or password:
+        token = base64.b64encode(f"{username}:{password}".encode()).decode()
+        request_object.add_header("Authorization", f"Basic {token}")
+    context = ssl.create_default_context() if cfg["nokia_api_tls_verify"] else ssl._create_unverified_context()
+    started = time.monotonic()
+    try:
+        with urllib.request.urlopen(request_object, timeout=5, context=context) as response:
+            content_type = response.headers.get_content_type()
+            body = response.read(1_000_001)
+            if len(body) > 1_000_000:
+                return {"enabled": True, "configured": True, "reachable": True, "authenticated": True,
+                        "status": response.status, "content_type": content_type, "latency_ms": None,
+                        "detail": "Nokia response exceeded the 1 MB safety limit"}, b""
+            return {"enabled": True, "configured": True, "reachable": True, "authenticated": True,
+                    "status": response.status, "content_type": content_type,
+                    "latency_ms": round((time.monotonic() - started) * 1000),
+                    "detail": "Configured Nokia endpoint responded successfully"}, body
+    except urllib.error.HTTPError as exc:
+        return {"enabled": True, "configured": True, "reachable": True, "authenticated": exc.code not in {401, 403},
+                "status": exc.code, "content_type": None,
+                "latency_ms": round((time.monotonic() - started) * 1000),
+                "detail": "Nokia endpoint rejected the configured credentials" if exc.code in {401, 403} else f"Nokia endpoint returned HTTP {exc.code}"}, b""
+    except (urllib.error.URLError, OSError, ssl.SSLError) as exc:
+        return {"enabled": True, "configured": True, "reachable": False, "authenticated": False,
+                "status": None, "content_type": None, "latency_ms": None,
+                "detail": f"Nokia endpoint unavailable: {str(exc.reason if isinstance(exc, urllib.error.URLError) else exc)[:180]}"}, b""
+
+
+def nokia_api_connectivity():
+    result, _ = _nokia_api_request(settings()["nokia_api_status_path"])
+    return result
+
+
+def _normalized_nokia_records(body, content_type):
+    records = []
+    text = body.decode("utf-8", errors="replace")
+    try:
+        if "json" in str(content_type) or text.lstrip().startswith(("{", "[")):
+            payload = json.loads(text)
+            def visit(value):
+                if isinstance(value, dict):
+                    records.append({str(key): item for key, item in value.items() if not isinstance(item, (dict, list))})
+                    for item in value.values(): visit(item)
+                elif isinstance(value, list):
+                    for item in value: visit(item)
+            visit(payload)
+        else:
+            root = ET.fromstring(text)
+            for element in root.iter():
+                record = dict(element.attrib)
+                for child in list(element):
+                    if child.text and child.text.strip(): record[child.tag.split("}")[-1]] = child.text.strip()
+                if element.text and element.text.strip() and not list(element):
+                    record[element.attrib.get("name") or element.tag.split("}")[-1]] = element.text.strip()
+                if record: records.append(record)
+    except (json.JSONDecodeError, ET.ParseError, RecursionError):
+        return []
+    return records[:2000]
+
+
+def nokia_operational_feed():
+    cfg = settings()
+    paths = {"status": cfg["nokia_api_status_path"], "cells": cfg["nokia_api_cells_path"],
+             "alarms": cfg["nokia_api_alarms_path"], "events": cfg["nokia_api_events_path"]}
+    endpoint_results, records_by_kind = {}, {}
+    for kind, path in paths.items():
+        result, body = _nokia_api_request(path)
+        endpoint_results[kind] = result
+        records_by_kind[kind] = _normalized_nokia_records(body, result.get("content_type")) if body else []
+    status_keys = {
+        "administrativestate": "Administrative state", "operationalstate": "Operational state",
+        "availabilitystatus": "Availability", "cellstate": "Cell state", "rfstate": "RF state",
+        "gpslock": "GPS lock", "gnssstatus": "GNSS status", "syncstatus": "Synchronization",
+        "s1state": "S1 state", "mmeconnection": "MME connection", "activeues": "Active UEs",
+        "temperature": "Temperature", "vswr": "VSWR", "txpower": "Transmit power",
+        "dlearfcn": "DL EARFCN", "ulearfcn": "UL EARFCN", "pci": "PCI", "band": "LTE band",
+        "bandwidth": "Bandwidth", "softwareversion": "Software version", "swversion": "Software version",
+    }
+    statuses = {}
+    for record in records_by_kind["status"] + records_by_kind["cells"]:
+        for key, value in record.items():
+            normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            if normalized in status_keys and status_keys[normalized] not in statuses:
+                statuses[status_keys[normalized]] = str(value)[:160]
+    messages = []
+    for kind in ("alarms", "events"):
+        for record in records_by_kind[kind]:
+            normalized = {re.sub(r"[^a-z0-9]", "", str(key).lower()): str(value)[:500] for key, value in record.items()}
+            message = next((normalized[key] for key in ("message", "text", "specificproblem", "probablecause", "description") if normalized.get(key)), "")
+            if not message: continue
+            messages.append({"kind": kind[:-1], "severity": next((normalized[key] for key in ("severity", "perceivedseverity", "level") if normalized.get(key)), "info")[:40],
+                             "source": next((normalized[key] for key in ("source", "object", "managedobject", "cell") if normalized.get(key)), "Nokia")[:120],
+                             "timestamp": next((normalized[key] for key in ("timestamp", "eventtime", "raisedtime", "time") if normalized.get(key)), "")[:80],
+                             "message": message})
+            if len(messages) >= 100: break
+    return {"sampled_at": int(time.time()), "enabled": bool(cfg["nokia_api_enabled"]),
+            "endpoints": endpoint_results, "statuses": [{"label": key, "value": value} for key, value in statuses.items()],
+            "messages": messages, "summary": {"status_fields": len(statuses), "messages": len(messages),
+            "reachable_endpoints": sum(bool(item.get("reachable")) for item in endpoint_results.values()),
+            "configured_endpoints": sum(bool(item.get("configured")) for item in endpoint_results.values())}}
+
+
+NOKIA_CONTROL_ACTIONS = {
+    "cell_lock": {"label": "Lock cell", "detail": "Administratively stop new radio service for the configured cell."},
+    "cell_unlock": {"label": "Unlock cell", "detail": "Return the configured cell to authorized service."},
+    "resynchronize": {"label": "Refresh synchronization", "detail": "Request a synchronization recovery operation."},
+    "acknowledge_alarms": {"label": "Acknowledge alarms", "detail": "Acknowledge the currently presented Nokia alarms."},
+    "restart_cell": {"label": "Restart cell", "detail": "Restart the configured cell; attached devices may disconnect."},
+}
+
+
+def nokia_control_status():
+    cfg = settings()
+    path = str(cfg["nokia_api_control_path"]).strip()
+    return {"enabled": bool(cfg["nokia_control_enabled"]),
+            "gateway_enabled": bool(cfg["nokia_api_enabled"]), "configured": bool(path),
+            "ready": bool(cfg["nokia_control_enabled"] and cfg["nokia_api_enabled"] and path),
+            "actions": [{"id": action, **details} for action, details in NOKIA_CONTROL_ACTIONS.items()],
+            "detail": "Control gateway ready" if cfg["nokia_control_enabled"] and cfg["nokia_api_enabled"] and path else
+                      "Enable Nokia API and control, then configure the licensed HTTPS control-gateway path in Home Assistant."}
+
+
+def run_nokia_control(action):
+    cfg = settings()
+    status = nokia_control_status()
+    if not status["ready"]:
+        raise ValueError(status["detail"])
+    result, body = _nokia_api_request(cfg["nokia_api_control_path"], method="POST",
+                                      json_body={"action": action, "enb_id": int(cfg["enb_id"]),
+                                                 "cell_id": int(cfg["cell_id"])})
+    if not result.get("authenticated"):
+        raise ValueError(result.get("detail") or "Nokia control gateway did not accept the request")
+    response = None
+    if body:
+        try: response = json.loads(body.decode("utf-8", errors="replace"))
+        except json.JSONDecodeError: response = {"detail": body.decode("utf-8", errors="replace")[:500]}
+    return {"ok": True, "action": action, "label": NOKIA_CONTROL_ACTIONS[action]["label"],
+            "gateway": result, "response": response}
+
+
 def commissioning_context():
     files = sorted(CONFIG_DIR.glob("commissioning-*"), key=lambda path: path.stat().st_mtime, reverse=True)
     if not files:
@@ -236,7 +499,11 @@ def commissioning_context():
               "reportingIntervalPm": "PM reporting", "serviceAccountSshStatus": "Service SSH",
               "s1LinkStatus": "S1 link in backup", "idleSessionTimeWebUI": "Web UI idle timeout",
               "icmpResponseEnabled": "ICMP response", "actRemoteSyslogTransmission": "Remote syslog",
-              "actTemperatureReport": "Temperature reporting"}
+              "actTemperatureReport": "Temperature reporting", "mcc": "MCC", "mnc": "MNC",
+              "tac": "Tracking area", "phyCellId": "Physical cell ID", "earfcnDL": "DL EARFCN",
+              "earfcnUL": "UL EARFCN", "dlChBw": "Channel bandwidth", "txPower": "Transmit power",
+              "eNBId": "eNodeB ID", "cellId": "Cell ID", "cellBarred": "Cell barred",
+              "administrativeState": "Administrative state"}
     fields = {}
     try:
         for element in ET.parse(path).iter():
@@ -264,12 +531,13 @@ def nokia_status():
     https = tls_status(host)
     http = tcp_check(host, 80, timeout=1.2)
     ssh = tcp_check(host, 22, timeout=1.2)
-    s1 = sctp_check(str(cfg["epc_host"]))
+    s1_port = int(cfg["s1ap_port"])
+    s1 = sctp_check(str(cfg["epc_host"]), s1_port)
     reachable = bool(ping or https["online"] or http["online"])
     return {"sampled_at": int(time.time()), "host": host, "reachable": reachable,
             "software_expected": "FLF21", "ping": {"online": bool(ping)},
-            "management": {"https": https, "http": http, "ssh": ssh},
-            "s1_target": {"host": str(cfg["epc_host"]), "port": 36412, **s1},
+            "management": {"https": https, "http": http, "ssh": ssh, "api": nokia_api_connectivity()},
+            "s1_target": {"host": str(cfg["epc_host"]), "port": s1_port, **s1},
             "commissioning": commissioning_context(),
             "licensed_status": {"available": False,
                 "detail": "GPS lock, RF transmission, temperature, and active alarms require Nokia BTS Site Manager, a licensed status export, or documented Nokia management OIDs/API."}}
@@ -1283,17 +1551,21 @@ def provision_mongo(sub):
         return "Saved locally"
     client, collection = mongo_collection()
     try:
+        down_mbps, up_mbps, qci = int(cfg["ambr_downlink_mbps"]), int(cfg["ambr_uplink_mbps"]), int(cfg["default_qci"])
+        ipv4v6 = cfg["subscriber_ip_version"] == "ipv4v6"
         if cfg["epc_type"] == "nextepc":
             doc = {"imsi": sub["imsi"], "security": {"k": sub["k"], "opc": sub["opc"], "amf": sub["amf"], "op": None},
-                   "ambr": {"downlink": 100000000, "uplink": 100000000}, "pdn": [{"apn": sub["apn"], "type": 0,
-                   "qos": {"qci": 9, "arp": {"priority_level": 8, "pre_emption_capability": 0, "pre_emption_vulnerability": 1}}}],
+                   "ambr": {"downlink": down_mbps * 1000000, "uplink": up_mbps * 1000000},
+                   "pdn": [{"apn": sub["apn"], "type": 2 if ipv4v6 else 0,
+                   "qos": {"qci": qci, "arp": {"priority_level": 8, "pre_emption_capability": 0, "pre_emption_vulnerability": 1}}}],
                    "subscriber_status": 0, "network_access_mode": 2, "access_restriction_data": 32}
         else:
             doc = {"imsi": sub["imsi"], "msisdn": [sub["msisdn"]] if sub["msisdn"] else [], "security": {"k": sub["k"], "opc": sub["opc"], "amf": sub["amf"]},
-                   "ambr": {"downlink": {"value": 1, "unit": 3}, "uplink": {"value": 1, "unit": 3}}, "subscriber_status": 0,
+                   "ambr": {"downlink": {"value": down_mbps, "unit": 2}, "uplink": {"value": up_mbps, "unit": 2}}, "subscriber_status": 0,
                    "network_access_mode": 0, "access_restriction_data": 32, "slice": [{"sst": 1, "default_indicator": True,
-                   "session": [{"name": sub["apn"], "type": 3, "pcc_rule": [], "ambr": {"downlink": {"value": 1, "unit": 3}, "uplink": {"value": 1, "unit": 3}},
-                   "qos": {"index": 9, "arp": {"priority_level": 8, "pre_emption_capability": 1, "pre_emption_vulnerability": 1}}}]}]}
+                   "session": [{"name": sub["apn"], "type": 3 if ipv4v6 else 1, "pcc_rule": [],
+                   "ambr": {"downlink": {"value": down_mbps, "unit": 2}, "uplink": {"value": up_mbps, "unit": 2}},
+                   "qos": {"index": qci, "arp": {"priority_level": 8, "pre_emption_capability": 1, "pre_emption_vulnerability": 1}}}]}]}
         collection.replace_one({"imsi": sub["imsi"]}, doc, upsert=True)
         return "Provisioned to EPC"
     finally:
@@ -1398,6 +1670,57 @@ def dismiss_pending_registration(imsi):
 @app.get("/api/bts/status")
 def bts_status_api():
     return jsonify(nokia_status())
+
+
+@app.get("/api/nokia-api/status")
+def nokia_api_status_api():
+    result = nokia_api_connectivity()
+    event("bts", "Checked optional Nokia status endpoint")
+    return jsonify(result)
+
+
+@app.get("/api/nokia/operations")
+def nokia_operations_api():
+    result = nokia_operational_feed()
+    event("bts", f"Polled Nokia operational feed: {result['summary']['status_fields']} status fields, {result['summary']['messages']} messages")
+    return jsonify(result)
+
+
+@app.get("/api/nokia/control")
+def nokia_control_status_api():
+    return jsonify(nokia_control_status())
+
+
+@app.post("/api/nokia/control")
+def nokia_control_api():
+    body = request.get_json(silent=True) or {}
+    action = str(body.get("action", ""))
+    if action not in NOKIA_CONTROL_ACTIONS:
+        return jsonify({"error": "Unsupported Nokia control action"}), 400
+    if str(body.get("confirm", "")) != action.upper():
+        return jsonify({"error": f"Type {action.upper()} to confirm this radio operation"}), 400
+    try:
+        result = run_nokia_control(action)
+        event("bts", f"Nokia control requested: {NOKIA_CONTROL_ACTIONS[action]['label']}")
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.get("/api/network-profile")
+def network_profile_api():
+    return jsonify(production_network_profile())
+
+
+@app.get("/api/network-profile/export")
+def network_profile_export():
+    profile = production_network_profile()
+    payload = {"product": "Baiamonte LTE", "purpose": "Reviewed production target for Nokia Site Manager and EPC",
+               "generated_at": int(time.time()), **profile,
+               "application": "Import or enter these values in licensed Nokia Site Manager and the EPC; verify the resulting Nokia status before RF service."}
+    return app.response_class(json.dumps(payload, indent=2) + "\n", mimetype="application/json",
+                              headers={"Content-Disposition": "attachment; filename=baiamonte-production-network-profile.json",
+                                       "X-Content-Type-Options": "nosniff"})
 
 
 @app.post("/api/subscribers")
@@ -1625,9 +1948,15 @@ def sim_readers():
 def sim_production_plan():
     cfg = settings()
     reader = sim_reader_status()
+    profile = production_network_profile()
     return jsonify({
         "network": {"mcc": str(cfg["mcc"]), "mnc": str(cfg["mnc"]), "apn": str(cfg["apn"]),
-                    "tac": int(cfg["tac"]), "plmn": f"{cfg['mcc']}-{cfg['mnc']}"},
+                    "tac": int(cfg["tac"]), "plmn": profile["plmn"], "mnc_length": profile["mnc_length"],
+                    "access_class": int(cfg["access_class"]), "preferred_plmns": str(cfg["preferred_plmns"]),
+                    "forbidden_plmns": str(cfg["forbidden_plmns"]), "home_plmn_only": bool(cfg["home_plmn_only"]),
+                    "ip_version": str(cfg["subscriber_ip_version"]), "mtu": int(cfg["subscriber_mtu"]),
+                    "qci": int(cfg["default_qci"]), "ambr_downlink_mbps": int(cfg["ambr_downlink_mbps"]),
+                    "ambr_uplink_mbps": int(cfg["ambr_uplink_mbps"])},
         "reader": reader,
         "steps": [
             {"id": "identity", "label": "Create device identity", "detail": "Assign the camera or IoT device, zone, IMSI, ICCID record, and APN."},
@@ -1647,8 +1976,9 @@ def sim_production_plan():
             {"file": "EF.FPLMN", "purpose": "Forbidden PLMNs; clear stale entries during commissioning", "required": False},
             {"file": "EF.EPSLOCI / EF.LOCI", "purpose": "Cached location; clear before first production attach", "required": False},
         ],
-        "prl_note": "PRL is a CDMA/3GPP2 file and is not used for LTE attachment. LTE network preference uses PLMN selector files such as EF.PLMNwAcT, EF.OPLMNwAcT, and EF.HPLMNwAcT.",
+        "selection_note": "Subscriber selection is complete when EF.IMSI, EF.AD, EF.ACC, the home and preferred PLMN selectors, forbidden list, and cached LTE location files are reviewed together with the matching EPC PLMN, TAC, APN, IP, DNS, QoS, and AMBR policy.",
         "write_note": "Direct card writes remain card-vendor-specific and require the correct ADM credentials. Baiamonte LTE will not guess an ADM key or issue an unverified write command.",
+        "profile_valid": profile["valid"], "profile_checks": profile["checks"],
     })
 
 
@@ -1841,7 +2171,8 @@ def sim_script():
         "[ ] Provision the same IMSI, K, OPc, AMF, and APN in the EPC/HSS",
         "[ ] Confirm attach evidence and run a live subscriber traffic test",
         "",
-        "NOTE: PRL is a CDMA/3GPP2 file and is not used by LTE. LTE selection uses PLMN selector files.",
+        f"Network selection: home PLMN {cfg['mcc']}-{cfg['mnc']} · preferred {cfg['preferred_plmns']} · forbidden {cfg['forbidden_plmns'] or 'none'}",
+        f"Subscriber policy: {cfg['subscriber_ip_version']} · MTU {cfg['subscriber_mtu']} · QCI {cfg['default_qci']} · AMBR {cfg['ambr_downlink_mbps']}/{cfg['ambr_uplink_mbps']} Mbps DL/UL",
         "Do not issue guessed pySim write commands. File paths, encodings, and ADM access depend on the programmable USIM vendor.",
     ])
     fd, path = tempfile.mkstemp(prefix="pysim-profile-", suffix=".txt", dir=DATA_DIR)

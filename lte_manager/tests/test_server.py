@@ -77,11 +77,11 @@ class AppTests(unittest.TestCase):
                 conn.execute("DELETE FROM subscribers WHERE imsi=?", (imsi,))
             self.server.settings = original
 
-    def test_production_sim_plan_uses_lte_plmn_files_not_prl(self):
+    def test_production_sim_plan_uses_complete_lte_plmn_path(self):
         data = self.client.get("/api/sim/production-plan").get_json()
         files = {item["file"] for item in data["lte_files"]}
         self.assertIn("EF.PLMNwAcT / EF.OPLMNwAcT", files)
-        self.assertIn("PRL is a CDMA/3GPP2 file", data["prl_note"])
+        self.assertIn("Subscriber selection is complete", data["selection_note"])
         self.assertEqual(len(data["steps"]), 6)
         self.assertEqual(self.client.post("/api/simulations/roaming", json={}).status_code, 404)
 
@@ -175,6 +175,9 @@ class AppTests(unittest.TestCase):
         self.assertIn('id="open-bts-management"', page)
         self.assertIn('id="check-bts-path"', page)
         self.assertIn('id="download-bts-status"', page)
+        self.assertIn('id="nokia-status-grid"', page)
+        self.assertIn('id="nokia-control-actions"', page)
+        self.assertIn('id="radio-channel-grid"', page)
         self.assertIn('id="pending-registrations"', page)
         self.assertIn('id="troubleshooting-pending"', page)
         self.assertNotIn('id="run-roaming-simulation"', page)
@@ -182,7 +185,7 @@ class AppTests(unittest.TestCase):
         self.assertIn('id="provision-sim-subscriber"', page)
         self.assertIn('id="confirm-sim-subscriber"', page)
         self.assertIn('id="sim-inventory"', page)
-        self.assertIn("LTE uses PLMN selector files", page)
+        self.assertIn("Complete PLMN and USIM policy", page)
 
     def test_commissioning_context_identifies_supported_nokia_access(self):
         path = Path(self.temp.name) / "commissioning-access-test.xml"
@@ -207,18 +210,71 @@ class AppTests(unittest.TestCase):
     def test_nokia_status_is_read_only_and_reports_management_signals(self):
         original = self.server.settings
         try:
-            self.server.settings = lambda: {"bts_host": "192.0.2.100", "epc_host": "192.0.2.151"}
+            self.server.settings = lambda: {"bts_host": "192.0.2.100", "epc_host": "192.0.2.151", "s1ap_port": 36412}
             with patch.object(self.server, "ping_check", return_value=True), \
                  patch.object(self.server, "tls_status", return_value={"online": True, "latency_ms": 4,
                      "protocol": "TLSv1.2", "cipher": "TEST", "certificate_sha256": "AA" * 32}), \
                  patch.object(self.server, "tcp_check", return_value={"online": False, "latency_ms": None}), \
                  patch.object(self.server, "sctp_check", return_value={"online": True, "latency_ms": 3}), \
-                 patch.object(self.server, "commissioning_context", return_value={"available": False, "fields": {}}):
+                 patch.object(self.server, "commissioning_context", return_value={"available": False, "fields": {}}), \
+                 patch.object(self.server, "nokia_api_connectivity", return_value={"enabled": False}):
                 data = self.client.get("/api/bts/status").get_json()
             self.assertTrue(data["reachable"])
             self.assertTrue(data["management"]["https"]["online"])
             self.assertTrue(data["s1_target"]["online"])
             self.assertFalse(data["licensed_status"]["available"])
+        finally:
+            self.server.settings = original
+
+    def test_band_2_channel_profile_labels_enb_tx_and_rx(self):
+        channel = self.server.radio_channel_profile({"lte_band": 2, "dl_earfcn": 900, "ul_earfcn": 18900,
+                                                     "channel_bandwidth_mhz": 10, "tx_power_dbm": 20,
+                                                     "pci": 21, "enb_id": 7, "cell_id": 1})
+        self.assertEqual(channel["enb_tx_mhz"], 1960.0)
+        self.assertEqual(channel["enb_rx_mhz"], 1880.0)
+        self.assertEqual(channel["duplex_spacing_mhz"], 80.0)
+
+    def test_nokia_operations_filters_status_and_messages(self):
+        original = self.server.settings
+        cfg = {"nokia_api_enabled": True, "nokia_api_status_path": "/status", "nokia_api_cells_path": "/cells",
+               "nokia_api_alarms_path": "/alarms", "nokia_api_events_path": "/events"}
+        responses = {
+            "/status": b'{"operationalState":"enabled","secretField":"hidden","gpsLock":"locked"}',
+            "/cells": b'{"activeUes":4,"pci":21}',
+            "/alarms": b'{"severity":"major","source":"cell-1","message":"GPS holdover"}',
+            "/events": b'{"level":"info","description":"S1 restored"}',
+        }
+        try:
+            self.server.settings = lambda: cfg
+            def request(path, method="GET", json_body=None):
+                return ({"enabled": True, "configured": True, "reachable": True, "authenticated": True,
+                         "content_type": "application/json", "status": 200}, responses[path])
+            with patch.object(self.server, "_nokia_api_request", side_effect=request):
+                data = self.client.get("/api/nokia/operations").get_json()
+            statuses = {item["label"]: item["value"] for item in data["statuses"]}
+            self.assertEqual(statuses["Operational state"], "enabled")
+            self.assertEqual(statuses["Active UEs"], "4")
+            self.assertNotIn("secretField", str(data))
+            self.assertEqual(len(data["messages"]), 2)
+        finally:
+            self.server.settings = original
+
+    def test_nokia_control_is_allowlisted_and_confirmed(self):
+        self.assertEqual(self.client.post("/api/nokia/control", json={"action": "shell", "confirm": "SHELL"}).status_code, 400)
+        response = self.client.post("/api/nokia/control", json={"action": "cell_lock", "confirm": "yes"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("CELL_LOCK", response.get_json()["error"])
+
+    def test_nokia_control_posts_scoped_gateway_contract(self):
+        original = self.server.settings
+        cfg = {"nokia_control_enabled": True, "nokia_api_enabled": True, "nokia_api_control_path": "/control",
+               "enb_id": 7, "cell_id": 3}
+        try:
+            self.server.settings = lambda: cfg
+            with patch.object(self.server, "_nokia_api_request", return_value=({"authenticated": True, "status": 202}, b'{"accepted":true}')) as gateway:
+                response = self.client.post("/api/nokia/control", json={"action": "resynchronize", "confirm": "RESYNCHRONIZE"})
+            self.assertEqual(response.status_code, 200)
+            gateway.assert_called_once_with("/control", method="POST", json_body={"action": "resynchronize", "enb_id": 7, "cell_id": 3})
         finally:
             self.server.settings = original
 

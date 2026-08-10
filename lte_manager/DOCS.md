@@ -17,7 +17,11 @@ Connect the MAIN antenna to MAIN and the diversity antenna to DIV before enablin
 
 The Radio Site page presents these connections as non-interactive inspection cards. It does not use checkboxes or claim to detect cable presence; confirm the hardware physically and use Nokia alarms or BTS Site Manager for electronic status.
 
-The commissioning backup identifies **HTTPS OAM through Nokia BTS Site Manager/WebEM** as the available management route: OAM TLS is forced, while the service-account SSH interface is disabled and no SNMP management configuration is present. The Radio Site poll therefore performs safe, read-only ICMP, HTTPS/TLS, HTTP, SSH-port, and EPC S1-listener checks. It displays the radio certificate SHA-256 fingerprint for identity comparison, but does not automatically trust the certificate or attempt to sign in. Live GPS lock, RF state, temperature, alarms, and Nokia operational counters still require the licensed Nokia management software or a vendor-supported export/API.
+The commissioning backup identifies **HTTPS OAM through Nokia BTS Site Manager/WebEM** as the available management route: OAM TLS is forced, while the service-account SSH interface is disabled and no SNMP management configuration is present. The Radio Site poll therefore performs safe, read-only ICMP, HTTPS/TLS, HTTP, SSH-port, and EPC S1-listener checks. It displays the radio certificate SHA-256 fingerprint for identity comparison, but does not automatically trust the certificate or attempt to sign in.
+
+For live Nokia data, enable `nokia_api_enabled` and configure the HTTPS base URL plus the supported status, cells, alarms, and events paths supplied by the licensed Nokia management interface or a local adapter. The base URL must use HTTPS and its hostname must exactly match `bts_host`. Optional Basic-auth credentials remain protected Home Assistant options. The app accepts JSON or XML, filters recognized operational fields, limits each response to 1 MB, and shows administrative/operational state, cell/RF state, GPS/GNSS, synchronization, S1/MME, active UEs, temperature, VSWR, power, channel, software, alarms, and event messages when the source provides them.
+
+Common controls use a separate opt-in. Set `nokia_control_enabled` and `nokia_api_control_path` only when a licensed local adapter implements the Baiamonte POST contract. The fixed actions are cell lock, cell unlock, synchronization refresh, alarm acknowledgement, and cell restart. Each request includes only its allowlisted action plus the configured eNodeB and cell IDs, requires the exact confirmation phrase, and is logged. The app does not guess or call undocumented Nokia control paths.
 
 Radio Operations includes shortcuts to open or copy the Nokia HTTPS management address, inspect the Home Assistant app container's route to the radio, and download the current safe diagnostic snapshot. These tools do not enable RF, change the commissioning profile, bypass the Nokia login, or accept arbitrary network commands.
 
@@ -44,7 +48,7 @@ The SIM page is a production workflow for owned programmable USIMs used by Baiam
 
 The page supports USB CCID readers through PC/SC, reports the detected reader and pySim readiness, provisions the matching subscriber to NextEPC/Open5GS, and checks live acceptance signals. Direct physical writes remain disabled by default because the ADM credential, protected authentication storage, file layout, and supported pySim commands depend on the programmable USIM vendor. Baiamonte LTE never guesses an ADM key. A non-CCID programmer may require its vendor driver.
 
-LTE does not use a CDMA/3GPP2 Preferred Roaming List (PRL). The LTE equivalents are USIM network-selection files such as EF.PLMNwAcT, EF.OPLMNwAcT, and EF.HPLMNwAcT. Production commissioning also reviews EF.AD, EF.ACC, EF.FPLMN, EF.EPSLOCI, and EF.LOCI. Clear stale forbidden and cached-location entries before the first attach when supported by the card vendor.
+Program and verify the LTE USIM network-selection files EF.PLMNwAcT, EF.OPLMNwAcT, and EF.HPLMNwAcT. Production commissioning also reviews EF.AD, EF.ACC, EF.FPLMN, EF.EPSLOCI, and EF.LOCI. Clear stale forbidden and cached-location entries before the first attach when supported by the card vendor.
 
 ## Subscriber Internet access
 
