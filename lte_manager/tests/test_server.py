@@ -577,6 +577,27 @@ class AppTests(unittest.TestCase):
         for destructive in ("rm ", "iptables -A", "iptables -D", "systemctl restart", "systemctl stop", "reboot"):
             self.assertNotIn(destructive, scripts)
 
+    def test_resource_status_is_bounded_and_non_secret(self):
+        response = self.client.get("/api/system/resources")
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertEqual(data["web_workers"], 1)
+        self.assertGreaterEqual(data["monitor_interval_seconds"], 30)
+        self.assertIn("memory_mb", data)
+        self.assertIn(data["memory_scope"], {"container", "web process"})
+        self.assertNotIn("mongodb_uri", data)
+
+    def test_operational_retention_prunes_old_rows(self):
+        old = 1
+        with self.server.db() as conn:
+            conn.execute("INSERT OR REPLACE INTO status_history VALUES(?,?,?,?,?)", (old, 0, 0, 0, 0))
+            conn.execute("INSERT INTO events(kind,message,created_at) VALUES(?,?,?)", ("test", "expired", old))
+        self.server._LAST_MAINTENANCE = 0
+        self.server.prune_operational_data(force=True)
+        with self.server.db() as conn:
+            self.assertIsNone(conn.execute("SELECT sampled_at FROM status_history WHERE sampled_at=?", (old,)).fetchone())
+            self.assertIsNone(conn.execute("SELECT id FROM events WHERE created_at=?", (old,)).fetchone())
+
 
 if __name__ == "__main__":
     unittest.main()

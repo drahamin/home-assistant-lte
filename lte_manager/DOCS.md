@@ -11,6 +11,8 @@ Use the moon/sun button in the app header to switch between light and dark appea
 
 Set the EPC and Nokia eNodeB addresses in the add-on configuration before first use. The public defaults use the documentation-only `192.0.2.0/24` range so private estate infrastructure is not published. Existing Home Assistant options are preserved during updates.
 
+The app is sized for a small private deployment: one web worker with four request threads, one 30–900 second availability monitor, and browser polling that pauses while the Home Assistant view is hidden. Network Care shows current web-process memory and local storage. `monitor_interval_seconds` defaults to 60 seconds; `history_retention_days` defaults to 30 days; and `event_retention_days` defaults to 90 days. Cleanup runs at most hourly and application logs rotate at 2 MB.
+
 ## Nokia commissioning
 
 Connect the MAIN antenna to MAIN and the diversity antenna to DIV before enabling RF. Connect the GPS antenna and confirm a valid GPS lock in licensed Nokia BTS Site Manager. Import the supplied commissioning backup on the BTS page; the app stores it privately with mode `0600` but does not impersonate or automate Nokia Site Manager.

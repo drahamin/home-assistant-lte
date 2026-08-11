@@ -22,4 +22,12 @@ configuration:
   sim_programming_enabled:
     name: Enable physical SIM writes
     description: Requires a compatible PC/SC reader and pySim-shell. Writes still require confirmation.
-
+  monitor_interval_seconds:
+    name: Network monitor interval
+    description: Seconds between background availability checks (30–900 recommended).
+  history_retention_days:
+    name: Connection history retention
+    description: Days of network-status samples to keep locally.
+  event_retention_days:
+    name: Activity retention
+    description: Days of operational activity entries to keep locally.
