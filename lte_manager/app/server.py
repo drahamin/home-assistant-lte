@@ -6,6 +6,7 @@ import json
 import ipaddress
 import os
 import re
+import resource
 import secrets
 import shutil
 import socket
@@ -13,6 +14,7 @@ import ssl
 import sqlite3
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -36,6 +38,11 @@ APP_LOG = DATA_DIR / "lte-manager.log"
 HEX_RE = re.compile(r"^[0-9A-Fa-f]+$")
 IMSI_RE = re.compile(r"^[0-9]{5,15}$")
 SECRET_SETTING_KEYS = {"mongodb_uri", "communications_gateway_url", "communications_gateway_token", "nokia_api_password"}
+_DB_INIT_LOCK = threading.Lock()
+_DB_INITIALIZED = False
+_MAINTENANCE_LOCK = threading.Lock()
+_LAST_MAINTENANCE = 0
+_LOG_LOCK = threading.Lock()
 
 
 def settings():
@@ -60,6 +67,7 @@ def settings():
         "epc_routing_management_enabled": False, "epc_ssh_user": "root", "epc_ssh_port": 22,
         "sim_programming_enabled": False, "communications_enabled": False,
         "sim_reader_name": "", "sim_reader_index": 0, "sim_reader_protocol": "auto",
+        "monitor_interval_seconds": 60, "history_retention_days": 30, "event_retention_days": 90,
         "communications_gateway_url": "", "communications_gateway_token": "",
         "sip_gateway_host": "", "sip_gateway_port": 5060, "sip_transport": "tcp",
     }
@@ -157,49 +165,66 @@ def production_network_profile():
                 "preferred_plmns", "forbidden_plmns")}}
 
 
+def _initialize_db():
+    global _DB_INITIALIZED
+    if _DB_INITIALIZED:
+        return
+    with _DB_INIT_LOCK:
+        if _DB_INITIALIZED:
+            return
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("""CREATE TABLE IF NOT EXISTS subscribers (
+            imsi TEXT PRIMARY KEY, name TEXT NOT NULL, k TEXT NOT NULL, opc TEXT NOT NULL,
+            amf TEXT NOT NULL, apn TEXT NOT NULL, msisdn TEXT DEFAULT '', created_at INTEGER NOT NULL
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, message TEXT, created_at INTEGER
+        )""")
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(subscribers)")}
+        if "zone" not in columns:
+            conn.execute("ALTER TABLE subscribers ADD COLUMN zone TEXT NOT NULL DEFAULT 'Unassigned'")
+        if "device_type" not in columns:
+            conn.execute("ALTER TABLE subscribers ADD COLUMN device_type TEXT NOT NULL DEFAULT 'Other IoT'")
+        if "critical" not in columns:
+            conn.execute("ALTER TABLE subscribers ADD COLUMN critical INTEGER NOT NULL DEFAULT 0")
+        if "notes" not in columns:
+            conn.execute("ALTER TABLE subscribers ADD COLUMN notes TEXT NOT NULL DEFAULT ''")
+        conn.execute("""CREATE TABLE IF NOT EXISTS status_history (
+            sampled_at INTEGER PRIMARY KEY, epc_online INTEGER NOT NULL, bts_online INTEGER NOT NULL,
+            s1_online INTEGER NOT NULL, db_online INTEGER NOT NULL
+        )""")
+        conn.execute("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS alert_state (
+            target TEXT PRIMARY KEY, failures INTEGER NOT NULL DEFAULT 0,
+            active INTEGER NOT NULL DEFAULT 0, last_notified INTEGER NOT NULL DEFAULT 0
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS pending_registrations (
+            imsi TEXT PRIMARY KEY, apn TEXT NOT NULL DEFAULT '', cause TEXT NOT NULL,
+            source TEXT NOT NULL, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 1
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS sim_inventory (
+            imsi TEXT PRIMARY KEY, iccid TEXT NOT NULL DEFAULT '', device_name TEXT NOT NULL,
+            device_type TEXT NOT NULL, zone TEXT NOT NULL, stage TEXT NOT NULL,
+            attach_confirmed INTEGER NOT NULL DEFAULT 0, data_verified INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL
+        )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS events_created_at_idx ON events(created_at)")
+        conn.commit()
+        conn.close()
+        _DB_INITIALIZED = True
+
+
 @contextmanager
 def db():
+    _initialize_db()
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("""CREATE TABLE IF NOT EXISTS subscribers (
-        imsi TEXT PRIMARY KEY, name TEXT NOT NULL, k TEXT NOT NULL, opc TEXT NOT NULL,
-        amf TEXT NOT NULL, apn TEXT NOT NULL, msisdn TEXT DEFAULT '', created_at INTEGER NOT NULL
-    )""")
-    conn.execute("""CREATE TABLE IF NOT EXISTS events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, message TEXT, created_at INTEGER
-    )""")
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(subscribers)")}
-    if "zone" not in columns:
-        conn.execute("ALTER TABLE subscribers ADD COLUMN zone TEXT NOT NULL DEFAULT 'Unassigned'")
-    if "device_type" not in columns:
-        conn.execute("ALTER TABLE subscribers ADD COLUMN device_type TEXT NOT NULL DEFAULT 'Other IoT'")
-    if "critical" not in columns:
-        conn.execute("ALTER TABLE subscribers ADD COLUMN critical INTEGER NOT NULL DEFAULT 0")
-    if "notes" not in columns:
-        conn.execute("ALTER TABLE subscribers ADD COLUMN notes TEXT NOT NULL DEFAULT ''")
-    conn.execute("""CREATE TABLE IF NOT EXISTS status_history (
-        sampled_at INTEGER PRIMARY KEY, epc_online INTEGER NOT NULL, bts_online INTEGER NOT NULL,
-        s1_online INTEGER NOT NULL, db_online INTEGER NOT NULL
-    )""")
-    conn.execute("""CREATE TABLE IF NOT EXISTS app_settings (
-        key TEXT PRIMARY KEY, value TEXT NOT NULL
-    )""")
-    conn.execute("""CREATE TABLE IF NOT EXISTS alert_state (
-        target TEXT PRIMARY KEY, failures INTEGER NOT NULL DEFAULT 0,
-        active INTEGER NOT NULL DEFAULT 0, last_notified INTEGER NOT NULL DEFAULT 0
-    )""")
-    conn.execute("""CREATE TABLE IF NOT EXISTS pending_registrations (
-        imsi TEXT PRIMARY KEY, apn TEXT NOT NULL DEFAULT '', cause TEXT NOT NULL,
-        source TEXT NOT NULL, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
-        attempts INTEGER NOT NULL DEFAULT 1
-    )""")
-    conn.execute("""CREATE TABLE IF NOT EXISTS sim_inventory (
-        imsi TEXT PRIMARY KEY, iccid TEXT NOT NULL DEFAULT '', device_name TEXT NOT NULL,
-        device_type TEXT NOT NULL, zone TEXT NOT NULL, stage TEXT NOT NULL,
-        attach_confirmed INTEGER NOT NULL DEFAULT 0, data_verified INTEGER NOT NULL DEFAULT 0,
-        updated_at INTEGER NOT NULL
-    )""")
+    conn.execute("PRAGMA busy_timeout=5000")
     try:
         yield conn
         conn.commit()
@@ -213,8 +238,13 @@ def db():
 def event(kind, message):
     with db() as conn:
         conn.execute("INSERT INTO events(kind,message,created_at) VALUES(?,?,?)", (kind, message, int(time.time())))
-    with APP_LOG.open("a", encoding="utf-8") as handle:
-        handle.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} [{kind.upper()}] {message}\n")
+    with _LOG_LOCK:
+        if APP_LOG.exists() and APP_LOG.stat().st_size > 2 * 1024 * 1024:
+            rotated = APP_LOG.with_suffix(".log.1")
+            rotated.unlink(missing_ok=True)
+            APP_LOG.replace(rotated)
+        with APP_LOG.open("a", encoding="utf-8") as handle:
+            handle.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} [{kind.upper()}] {message}\n")
 
 
 def update_sim_inventory(sub, stage, iccid="", attach_confirmed=False, data_verified=False):
@@ -687,17 +717,76 @@ def process_alert_state(status):
 def sample_network(process_alerts=False):
     cfg = settings()
     status = {"epc": {"host": cfg["epc_host"], "online": ping_check(cfg["epc_host"]),
-                      "s1": sctp_check(cfg["epc_host"]), "database": tcp_check(cfg["epc_host"], 27017)},
+                      "s1": sctp_check(cfg["epc_host"], int(cfg.get("s1ap_port", 36412))),
+                      "database": tcp_check(cfg["epc_host"], 27017)},
               "bts": {"host": cfg["bts_host"], "online": ping_check(cfg["bts_host"]), "software": "FLF21"}}
     sampled_at = int(time.time())
     with db() as conn:
         conn.execute("INSERT OR REPLACE INTO status_history(sampled_at,epc_online,bts_online,s1_online,db_online) VALUES(?,?,?,?,?)",
             (sampled_at, int(status["epc"]["online"]), int(status["bts"]["online"]),
              int(status["epc"]["s1"]["online"]), int(status["epc"]["database"]["online"])))
-        conn.execute("DELETE FROM status_history WHERE sampled_at < ?", (sampled_at - 30 * 86400,))
+    prune_operational_data()
     if process_alerts:
         process_alert_state(status)
     return status
+
+
+def prune_operational_data(force=False):
+    """Bound operational storage without doing cleanup on every monitor sample."""
+    global _LAST_MAINTENANCE
+    now = int(time.time())
+    with _MAINTENANCE_LOCK:
+        if not force and now - _LAST_MAINTENANCE < 3600:
+            return False
+        cfg = settings()
+        history_days = min(max(int(cfg.get("history_retention_days", 30)), 1), 365)
+        event_days = min(max(int(cfg.get("event_retention_days", 90)), 1), 730)
+        with db() as conn:
+            conn.execute("DELETE FROM status_history WHERE sampled_at < ?", (now - history_days * 86400,))
+            conn.execute("DELETE FROM events WHERE created_at < ?", (now - event_days * 86400,))
+        _LAST_MAINTENANCE = now
+        return True
+
+
+def process_memory_mb():
+    try:
+        for line in Path("/proc/self/status").read_text().splitlines():
+            if line.startswith("VmRSS:"):
+                return round(int(line.split()[1]) / 1024, 1)
+    except (OSError, ValueError, IndexError):
+        pass
+    usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    divisor = 1024 * 1024 if os.uname().sysname == "Darwin" else 1024
+    return round(usage / divisor, 1)
+
+
+def container_memory_mb():
+    for candidate in (Path("/sys/fs/cgroup/memory.current"),
+                      Path("/sys/fs/cgroup/memory/memory.usage_in_bytes")):
+        try:
+            return round(int(candidate.read_text().strip()) / 1048576, 1)
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def resource_status():
+    cfg = settings()
+    with db() as conn:
+        history_rows = conn.execute("SELECT COUNT(*) FROM status_history").fetchone()[0]
+        event_rows = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    database_bytes = sum(path.stat().st_size for path in (
+        DB_PATH, Path(f"{DB_PATH}-wal"), Path(f"{DB_PATH}-shm")) if path.exists())
+    log_bytes = sum(path.stat().st_size for path in (APP_LOG, APP_LOG.with_suffix(".log.1")) if path.exists())
+    container_mb = container_memory_mb()
+    return {"memory_mb": container_mb if container_mb is not None else process_memory_mb(),
+            "memory_scope": "container" if container_mb is not None else "web process",
+            "database_mb": round(database_bytes / 1048576, 2),
+            "log_mb": round(log_bytes / 1048576, 2), "history_rows": history_rows, "event_rows": event_rows,
+            "monitor_interval_seconds": min(max(int(cfg.get("monitor_interval_seconds", 60)), 30), 900),
+            "history_retention_days": min(max(int(cfg.get("history_retention_days", 30)), 1), 365),
+            "event_retention_days": min(max(int(cfg.get("event_retention_days", 90)), 1), 730),
+            "web_workers": 1, "web_threads": 4, "checked_at": int(time.time())}
 
 
 def connection_incidents(hours=168, limit=40):
@@ -2342,6 +2431,11 @@ def sim_script():
 @app.get("/health")
 def health():
     return jsonify({"ok": True})
+
+
+@app.get("/api/system/resources")
+def system_resources():
+    return jsonify(resource_status())
 
 
 if __name__ == "__main__":

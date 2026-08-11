@@ -361,3 +361,13 @@ html[data-theme="dark"] #toast { color: #dff0d7; border-color: #526546; backgrou
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { scroll-behavior: auto !important; animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
 }
+
+.resource-status { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 10px; }
+.resource-status > div { display: flex; align-items: center; gap: 11px; padding: 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--ivory); }
+.resource-status span { display: grid; min-width: 0; gap: 2px; }
+.resource-status small { font-size: 8px; letter-spacing: .13em; color: var(--muted); }
+.resource-status b { font-size: 15px; }.resource-status em { font-size: 10px; color: var(--muted); font-style: normal; }
+.resource-light { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 50%; background: #5ca66f; box-shadow: 0 0 0 4px color-mix(in srgb,#5ca66f 15%,transparent),0 0 10px color-mix(in srgb,#5ca66f 45%,transparent); }
+.page-hidden *, .page-hidden *::before, .page-hidden *::after { animation-play-state: paused !important; }
+@media (max-width: 900px) { .resource-status { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 620px) { .resource-status { grid-template-columns: 1fr; } }

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.3
+
+- Reduced the web service from two worker processes to one four-thread worker with bounded request recycling for a smaller Home Assistant memory footprint.
+- Stopped phone log and Nokia polling while the page is hidden, slowed background refreshes, and prevented overlapping radio polls.
+- Initialized and migrated SQLite once per process instead of on every database operation, and added a supporting event-time index.
+- Added configurable monitor cadence plus bounded history/event retention, hourly cleanup, and 2 MB rotating application logs.
+- Added a compact Home Assistant resource panel showing web-process memory, local database/log storage, monitor cadence, retained samples, and worker profile.
+
 ## 0.6.2
 
 - Added one-tap generation of a unique PLMN-matching IMSI, K, OP, OPc, AMF, PIN, PUK, APN, and an ICCID programming candidate for owned programmable USIMs.
