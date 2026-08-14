@@ -2,16 +2,18 @@ FROM python:3.12-alpine3.20
 
 ARG BUILD_VERSION
 ARG BUILD_ARCH
+ARG PYSIM_REF=9c77e4ed948e97584680a0b1c1a630bc7fa6bfcd
 LABEL io.hass.version="${BUILD_VERSION}" \
       io.hass.type="app" \
       io.hass.arch="${BUILD_ARCH}" \
       org.opencontainers.image.title="Baiamonte LTE" \
       org.opencontainers.image.source="https://github.com/drahamin/home-assistant-lte"
 
-RUN apk add --no-cache bash ccid iputils openssh-client openssl pcsc-lite-libs pcsc-lite \
-      pcsc-lite-dev gcc musl-dev swig \
+RUN apk add --no-cache bash ca-certificates ccid iputils openssh-client openssl pcsc-lite-libs pcsc-lite \
+      pcsc-lite-dev gcc musl-dev swig git \
     && pip install --no-cache-dir pyscard==2.3.1 \
-    && apk del pcsc-lite-dev gcc musl-dev swig
+    && pip install --no-cache-dir "git+https://github.com/osmocom/pysim.git@${PYSIM_REF}" \
+    && apk del pcsc-lite-dev gcc musl-dev swig git
 WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt

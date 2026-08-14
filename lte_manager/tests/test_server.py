@@ -459,6 +459,52 @@ class AppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("sim_programming_enabled", response.get_json()["error"])
 
+    def test_program_sim_writes_complete_identity_then_provisions_hss(self):
+        body = {"confirm": "PROGRAM 001010000000123", "name": "Gate camera",
+                "device_type": "Camera", "zone": "Estate Gate", "critical": True, "notes": "Production",
+                "imsi": "001010000000123", "iccid": "8900101000000000123", "k": "A" * 32,
+                "opc": "B" * 32, "amf": "8000", "apn": "internet", "msisdn": "", "adm": "12345678"}
+        cfg = {"sim_programming_enabled": True, "sim_reader_index": 0, "sim_card_type": "sysmoISIM-SJA5",
+               "sim_adm_key": "", "sim_adm_format": "decimal", "mcc": "001", "mnc": "01",
+               "access_class": 0, "apn": "internet", "epc_type": "local"}
+        original = self.server.settings
+        try:
+            self.server.settings = lambda: cfg
+            completed = subprocess.CompletedProcess(["pySim-prog.py"], 0, "done", "")
+            with patch.object(self.server.shutil, "which", side_effect=lambda name: "/usr/bin/pySim-prog.py" if "prog" in name else None), \
+                 patch.object(self.server, "sim_reader_status", return_value={"selected_reader": "USB", "selected_index": 0}), \
+                 patch.object(self.server.subprocess, "run", return_value=completed) as run, \
+                 patch.object(self.server, "read_sim_card", return_value={"imsi": body["imsi"], "iccid": body["iccid"]}), \
+                 patch.object(self.server, "provision_mongo", return_value="Provisioned to EPC"):
+                response = self.client.post("/api/sim/card/program", json=body)
+            self.assertEqual(response.status_code, 200)
+            data = response.get_json()
+            self.assertTrue(data["readback_verified"])
+            args = run.call_args.args[0]
+            self.assertIn("--ki", args)
+            self.assertIn("--opc", args)
+            self.assertIn("--mnclen", args)
+            self.assertIn("--acc", args)
+            self.assertNotIn(body["k"], str(data))
+        finally:
+            with self.server.db() as conn:
+                conn.execute("DELETE FROM subscribers WHERE imsi=?", (body["imsi"],))
+                conn.execute("DELETE FROM sim_inventory WHERE imsi=?", (body["imsi"],))
+            self.server.settings = original
+
+    def test_traffic_history_calculates_measured_rates(self):
+        now = int(self.server.time.time())
+        with self.server.db() as conn:
+            conn.execute("DELETE FROM traffic_history")
+            conn.execute("INSERT INTO traffic_history VALUES(?,?,?,?,?,?,?)", (now - 60, 10, 1000, 8, 800, 5, 500))
+            conn.execute("INSERT INTO traffic_history VALUES(?,?,?,?,?,?,?)", (now, 20, 3000, 18, 1800, 15, 2500))
+        data = self.client.get("/api/traffic/history?hours=1").get_json()
+        self.assertTrue(data["measured"])
+        self.assertEqual(data["uploaded_bytes"], 1000)
+        self.assertEqual(data["downloaded_bytes"], 2000)
+        self.assertEqual(data["points"][-1]["uplink_bps"], 133)
+        self.assertEqual(data["points"][-1]["downlink_bps"], 267)
+
     def test_routing_apply_requires_exact_confirmation(self):
         original = self.server.settings
         try:

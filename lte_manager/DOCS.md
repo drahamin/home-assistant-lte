@@ -48,9 +48,11 @@ An administrator can review the request from **Estate devices** or **Network car
 
 The SIM page is a production workflow for owned programmable USIMs used by Baiamonte cameras and IoT devices. It separates identity creation, Milenage credential generation, physical card programming, EPC/HSS provisioning, modem setup, attach observation, and subscriber-data proof. A downloaded private worksheet contains the secure handoff record and a card read-back checklist. Treat that file like a password and retain it only in approved secure storage.
 
-The page supports USB CCID readers through PC/SC, reports the detected reader and pySim readiness, provisions the matching subscriber to NextEPC/Open5GS, and checks live acceptance signals. Direct physical writes remain disabled by default because the ADM credential, protected authentication storage, file layout, and supported pySim commands depend on the programmable USIM vendor. Baiamonte LTE never guesses an ADM key. A non-CCID programmer may require its vendor driver.
+The page supports USB CCID readers through PC/SC, reports the detected reader and pySim readiness, provisions the matching subscriber to NextEPC/Open5GS, and checks live acceptance signals. The image includes a pinned official Osmocom pySim writer. Physical writes remain disabled by default and require the card vendor’s correct ADM credential. Baiamonte LTE never guesses or retries an ADM key. A non-CCID programmer may require its vendor driver.
 
-Set `sim_programming_enabled` to permit USB card access. `sim_reader_name` optionally selects a reader by a case-insensitive name fragment; otherwise `sim_reader_index` selects the detected PC/SC reader. `sim_reader_protocol` can remain `auto` or force `T0`/`T1` for a card that requires it. The workbench reports reader and writer capability separately. A CCID reader is sufficient for the built-in read-only inspection, while physical writer readiness additionally requires a supported pySim writer and the card vendor’s ADM credential.
+Set `sim_programming_enabled` to permit USB card access. `sim_reader_name` optionally selects a reader by a case-insensitive name fragment; otherwise `sim_reader_index` selects the detected PC/SC reader. `sim_reader_protocol` can remain `auto` or force `T0`/`T1` for a card that requires it. Set `sim_adm_key` and `sim_adm_format` from the card vendor; alternatively enter ADM1 only for the current write. `sim_card_type` may contain the exact pySim model name, or remain blank for automatic detection.
+
+**Program SIM + EPC** requires a complete profile and the exact `PROGRAM <IMSI>` confirmation. It writes ICCID, IMSI, K, OPc, MCC, MNC, MNC length, and access class using argument-safe pySim execution. It then reads ICCID and IMSI back. Only a matching read-back proceeds to EPC/HSS provisioning with the same IMSI, K, OPc, AMF, APN, QoS, and AMBR policy. If read-back fails, the card is not marked deployable and the EPC record is not created. Review EF.PLMNwAcT/EF.OPLMNwAcT, EF.HPLMNwAcT, EF.FPLMN, EF.EPSLOCI, and EF.LOCI because support for these policy files varies by card model.
 
 **Auto-generate** creates a unique 15-digit IMSI under the configured MCC/MNC, random K and OP, derived Milenage OPc, AMF, PIN, PUK, APN, and a Luhn-checked ICCID programming candidate. These secrets are returned only to the browser. Use the physical card’s read-back ICCID when its identity is factory-assigned. **Import private profile** parses the downloaded Baiamonte worksheet locally in the browser without uploading it. **Prepare replacement copy** retains a loaded private identity for an owned replacement card and clears the ICCID so the new card can be read; do not operate two cards with the same identity simultaneously.
 
@@ -69,6 +71,10 @@ On the EPC host, an administrator must:
 3. Masquerade the UE subnet out `epc_uplink_interface` and allow established return traffic.
 4. Persist those settings using the EPC operating system's supported firewall method.
 5. Attach a subscriber and open a public HTTPS site from that UE. This is the required end-to-end proof that subscriber Internet routing works.
+
+### Traffic history
+
+When guarded EPC routing access is enabled and its SSH host key is trusted, the monitor samples the byte and packet counters of only the Baiamonte-managed subscriber NAT and forwarding rules. `traffic_monitor_interval_seconds` controls the 60–3600 second cadence and defaults to five minutes. The Overview graph calculates download and upload rates from counter deltas, shows measured totals, and never fabricates values. Counter resets produce a zero delta rather than a negative spike.
 
 ### EPC Routing Assistant
 

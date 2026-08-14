@@ -37,7 +37,7 @@ DB_PATH = DATA_DIR / "lte-manager.db"
 APP_LOG = DATA_DIR / "lte-manager.log"
 HEX_RE = re.compile(r"^[0-9A-Fa-f]+$")
 IMSI_RE = re.compile(r"^[0-9]{5,15}$")
-SECRET_SETTING_KEYS = {"mongodb_uri", "communications_gateway_url", "communications_gateway_token", "nokia_api_password"}
+SECRET_SETTING_KEYS = {"mongodb_uri", "communications_gateway_url", "communications_gateway_token", "nokia_api_password", "sim_adm_key"}
 _DB_INIT_LOCK = threading.Lock()
 _DB_INITIALIZED = False
 _MAINTENANCE_LOCK = threading.Lock()
@@ -67,7 +67,9 @@ def settings():
         "epc_routing_management_enabled": False, "epc_ssh_user": "root", "epc_ssh_port": 22,
         "sim_programming_enabled": False, "communications_enabled": False,
         "sim_reader_name": "", "sim_reader_index": 0, "sim_reader_protocol": "auto",
+        "sim_card_type": "", "sim_adm_key": "", "sim_adm_format": "decimal",
         "monitor_interval_seconds": 60, "history_retention_days": 30, "event_retention_days": 90,
+        "traffic_monitor_interval_seconds": 300,
         "communications_gateway_url": "", "communications_gateway_token": "",
         "sip_gateway_host": "", "sip_gateway_port": 5060, "sip_transport": "tcp",
     }
@@ -196,6 +198,11 @@ def _initialize_db():
         conn.execute("""CREATE TABLE IF NOT EXISTS status_history (
             sampled_at INTEGER PRIMARY KEY, epc_online INTEGER NOT NULL, bts_online INTEGER NOT NULL,
             s1_online INTEGER NOT NULL, db_online INTEGER NOT NULL
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS traffic_history (
+            sampled_at INTEGER PRIMARY KEY, nat_packets INTEGER NOT NULL, nat_bytes INTEGER NOT NULL,
+            outbound_packets INTEGER NOT NULL, outbound_bytes INTEGER NOT NULL,
+            return_packets INTEGER NOT NULL, return_bytes INTEGER NOT NULL
         )""")
         conn.execute("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         conn.execute("""CREATE TABLE IF NOT EXISTS alert_state (
@@ -743,6 +750,7 @@ def prune_operational_data(force=False):
         event_days = min(max(int(cfg.get("event_retention_days", 90)), 1), 730)
         with db() as conn:
             conn.execute("DELETE FROM status_history WHERE sampled_at < ?", (now - history_days * 86400,))
+            conn.execute("DELETE FROM traffic_history WHERE sampled_at < ?", (now - history_days * 86400,))
             conn.execute("DELETE FROM events WHERE created_at < ?", (now - event_days * 86400,))
         _LAST_MAINTENANCE = now
         return True
@@ -1201,18 +1209,27 @@ if iptables -w 5 -C FORWARD -s "$SUBNET" -o "$UPLINK" -j ACCEPT >/dev/null 2>&1;
 if iptables -w 5 -C FORWARD -d "$SUBNET" -i "$UPLINK" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT >/dev/null 2>&1; then return_ok=1; else return_ok=0; fi
 if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet baiamonte-lte-routing.service; then service_ok=1; else service_ok=0; fi
 nat_packets=$(iptables -w 5 -t nat -nvxL POSTROUTING 2>/dev/null | awk -v s="$SUBNET" -v o="$UPLINK" '$3=="MASQUERADE" && $7==o && $8==s {{n+=$1}} END {{print n+0}}')
+nat_bytes=$(iptables -w 5 -t nat -nvxL POSTROUTING 2>/dev/null | awk -v s="$SUBNET" -v o="$UPLINK" '$3=="MASQUERADE" && $7==o && $8==s {{n+=$2}} END {{print n+0}}')
 outbound_packets=$(iptables -w 5 -nvxL FORWARD 2>/dev/null | awk -v s="$SUBNET" -v o="$UPLINK" '$3=="ACCEPT" && $7==o && $8==s {{n+=$1}} END {{print n+0}}')
+outbound_bytes=$(iptables -w 5 -nvxL FORWARD 2>/dev/null | awk -v s="$SUBNET" -v o="$UPLINK" '$3=="ACCEPT" && $7==o && $8==s {{n+=$2}} END {{print n+0}}')
 return_packets=$(iptables -w 5 -nvxL FORWARD 2>/dev/null | awk -v s="$SUBNET" -v i="$UPLINK" '$3=="ACCEPT" && $6==i && $9==s {{n+=$1}} END {{print n+0}}')
-printf 'forwarding=%s\ninterface=%s\nroute=%s\nnat=%s\noutbound=%s\nreturn=%s\nservice=%s\nnat_packets=%s\noutbound_packets=%s\nreturn_packets=%s\nos=%s\n' "$forwarding" "$interface_ok" "$route_ok" "$nat_ok" "$outbound_ok" "$return_ok" "$service_ok" "$nat_packets" "$outbound_packets" "$return_packets" "$(uname -sr)"
+return_bytes=$(iptables -w 5 -nvxL FORWARD 2>/dev/null | awk -v s="$SUBNET" -v i="$UPLINK" '$3=="ACCEPT" && $6==i && $9==s {{n+=$2}} END {{print n+0}}')
+printf 'forwarding=%s\ninterface=%s\nroute=%s\nnat=%s\noutbound=%s\nreturn=%s\nservice=%s\nnat_packets=%s\nnat_bytes=%s\noutbound_packets=%s\noutbound_bytes=%s\nreturn_packets=%s\nreturn_bytes=%s\nos=%s\n' "$forwarding" "$interface_ok" "$route_ok" "$nat_ok" "$outbound_ok" "$return_ok" "$service_ok" "$nat_packets" "$nat_bytes" "$outbound_packets" "$outbound_bytes" "$return_packets" "$return_bytes" "$(uname -sr)"
 """
     _, output = run_epc_script(script)
     values = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
     checks = {key: values.get(key) == "1" for key in ("forwarding", "interface", "route", "nat", "outbound", "return", "service")}
     counters = {key: int(values.get(f"{key}_packets", 0)) for key in ("nat", "outbound", "return")}
+    byte_counters = {key: int(values.get(f"{key}_bytes", 0)) for key in ("nat", "outbound", "return")}
     result = {"checks": checks, "counters": counters, "ready": all(checks.values()), "os": values.get("os", "Unknown"),
-              "host": cfg["host"], "subnet": cfg["subnet"], "interface": cfg["interface"], "checked_at": int(time.time())}
+              "bytes": byte_counters, "host": cfg["host"], "subnet": cfg["subnet"],
+              "interface": cfg["interface"], "checked_at": int(time.time())}
     with db() as conn:
         conn.execute("INSERT OR REPLACE INTO app_settings(key,value) VALUES('routing_last_status',?)", (json.dumps(result),))
+        conn.execute("""INSERT OR REPLACE INTO traffic_history
+                     (sampled_at,nat_packets,nat_bytes,outbound_packets,outbound_bytes,return_packets,return_bytes)
+                     VALUES(?,?,?,?,?,?,?)""", (result["checked_at"], counters["nat"], byte_counters["nat"],
+                     counters["outbound"], byte_counters["outbound"], counters["return"], byte_counters["return"]))
     return result
 
 
@@ -1970,6 +1987,46 @@ def connection_history():
     return jsonify({"hours": hours, "points": rows, "uptime": {"epc": uptime["epc_online"], "radio": uptime["bts_online"]}})
 
 
+@app.get("/api/traffic/history")
+def traffic_history_api():
+    hours = min(max(request.args.get("hours", 24, type=int), 1), 720)
+    since = int(time.time()) - hours * 3600
+    with db() as conn:
+        rows = [dict(row) for row in conn.execute(
+            "SELECT sampled_at,nat_packets,nat_bytes,outbound_packets,outbound_bytes,return_packets,return_bytes "
+            "FROM traffic_history WHERE sampled_at>=? ORDER BY sampled_at", (since,))]
+    points, uploaded, downloaded = [], 0, 0
+    previous = None
+    for row in rows:
+        up_delta = down_delta = 0
+        interval = 0
+        if previous:
+            interval = max(1, row["sampled_at"] - previous["sampled_at"])
+            up_delta = max(0, row["outbound_bytes"] - previous["outbound_bytes"])
+            down_delta = max(0, row["return_bytes"] - previous["return_bytes"])
+            uploaded += up_delta
+            downloaded += down_delta
+        points.append({"sampled_at": row["sampled_at"],
+                       "uplink_bps": round(up_delta * 8 / interval) if interval else 0,
+                       "downlink_bps": round(down_delta * 8 / interval) if interval else 0,
+                       "outbound_packets": row["outbound_packets"], "return_packets": row["return_packets"]})
+        previous = row
+    if len(points) > 360:
+        stride = (len(points) + 359) // 360
+        points = points[::stride]
+        if points[-1]["sampled_at"] != rows[-1]["sampled_at"]:
+            last, prior = rows[-1], rows[-2]
+            interval = max(1, last["sampled_at"] - prior["sampled_at"])
+            points.append({"sampled_at": last["sampled_at"],
+                           "uplink_bps": round(max(0, last["outbound_bytes"] - prior["outbound_bytes"]) * 8 / interval),
+                           "downlink_bps": round(max(0, last["return_bytes"] - prior["return_bytes"]) * 8 / interval),
+                           "outbound_packets": last["outbound_packets"], "return_packets": last["return_packets"]})
+    return jsonify({"hours": hours, "points": points, "samples": len(rows),
+                    "uploaded_bytes": uploaded, "downloaded_bytes": downloaded,
+                    "measured": len(rows) >= 2, "sample_interval_seconds": min(max(
+                        int(settings().get("traffic_monitor_interval_seconds", 300)), 60), 3600)})
+
+
 @app.get("/api/network/visibility")
 def network_visibility_api():
     return jsonify(network_visibility())
@@ -2071,14 +2128,18 @@ def sim_reader_status():
     enabled = bool(cfg["sim_programming_enabled"])
     requested_name = str(cfg["sim_reader_name"]).strip()
     selected = next((name for name in detected if requested_name.lower() in name.lower()), "") if requested_name else ""
+    selected_index = detected.index(selected) if selected else None
     if not selected and detected:
         index = min(max(int(cfg["sim_reader_index"]), 0), len(detected) - 1)
         selected = detected[index]
+        selected_index = index
     return {"enabled": enabled, "pysim": bool(shell_tool or writer_tool),
             "pysim_shell": bool(shell_tool), "pysim_writer": bool(writer_tool),
             "usb_visible": Path("/dev/bus/usb").exists(), "readers": detected, "selected_reader": selected,
-            "reader_name": requested_name, "reader_index": int(cfg["sim_reader_index"]),
-            "protocol": str(cfg["sim_reader_protocol"]), "read_ready": bool(detected and enabled),
+            "reader_name": requested_name, "reader_index": int(cfg["sim_reader_index"]), "selected_index": selected_index,
+            "protocol": str(cfg["sim_reader_protocol"]), "card_type": str(cfg.get("sim_card_type", "")),
+            "adm_configured": bool(str(cfg.get("sim_adm_key", "")).strip()),
+            "read_ready": bool(detected and enabled),
             "write_ready": bool(writer_tool and detected and enabled),
             "ready": bool(detected and enabled)}
 
@@ -2175,6 +2236,79 @@ def sim_card_read():
         return jsonify({"error": str(exc)}), 400
 
 
+def _redact_writer_output(text, secrets_to_hide):
+    clean = str(text or "")[-4000:]
+    for value in secrets_to_hide:
+        if value:
+            clean = clean.replace(str(value), "[REDACTED]")
+    return clean
+
+
+@app.post("/api/sim/card/program")
+def sim_card_program():
+    body = request.get_json(silent=True) or {}
+    try:
+        sub = validate_subscriber(body)
+        cfg = settings()
+        if body.get("confirm") != f"PROGRAM {sub['imsi']}":
+            raise ValueError(f"Confirm this card write with PROGRAM {sub['imsi']}")
+        if not cfg["sim_programming_enabled"]:
+            raise ValueError("Enable sim_programming_enabled before writing a card")
+        writer = shutil.which("pySim-prog.py") or shutil.which("pySim-prog")
+        status = sim_reader_status()
+        if not writer or not status["selected_reader"]:
+            raise ValueError("The pySim writer and a PC/SC reader must both be ready")
+        iccid = str(body.get("iccid", "")).strip()
+        if not iccid.isdigit() or len(iccid) not in {18, 19, 20}:
+            raise ValueError("A verified 18–20 digit ICCID is required for physical programming")
+        mcc, mnc = str(cfg["mcc"]), str(cfg["mnc"])
+        if not sub["imsi"].startswith(mcc + mnc):
+            raise ValueError(f"IMSI must begin with the configured home PLMN {mcc}-{mnc}")
+        if sub["apn"] != str(cfg["apn"]):
+            raise ValueError(f"APN must match the configured production APN {cfg['apn']}")
+        adm = str(body.get("adm", "")).strip() or str(cfg.get("sim_adm_key", "")).strip()
+        adm_format = str(cfg.get("sim_adm_format", "decimal"))
+        if adm_format == "hex":
+            if len(adm) != 16 or not HEX_RE.fullmatch(adm):
+                raise ValueError("The configured hexadecimal ADM credential must be exactly 16 hex characters")
+            adm_args = ["--pin-adm-hex", adm.upper()]
+        else:
+            if not re.fullmatch(r"\d{4,16}", adm):
+                raise ValueError("Enter the card vendor's 4–16 digit ADM credential")
+            adm_args = ["--pin-adm", adm]
+        card_type = str(cfg.get("sim_card_type", "")).strip()
+        if card_type and not re.fullmatch(r"[A-Za-z0-9_-]{2,40}", card_type):
+            raise ValueError("The configured pySim card type contains unsupported characters")
+        acc = f"{1 << min(max(int(cfg['access_class']), 0), 15):04X}"
+        args = [writer, "--pcsc-device", str(status["selected_index"]), "--ki", sub["k"],
+                "--opc", sub["opc"], "--mcc", mcc, "--mnc", mnc, "--mnclen", str(len(mnc)),
+                "--imsi", sub["imsi"], "--iccid", iccid, "--acc", acc, *adm_args]
+        if card_type:
+            args.extend(["--type", card_type])
+        result = subprocess.run(args, capture_output=True, text=True, timeout=90, check=False)
+        output = _redact_writer_output(result.stdout + "\n" + result.stderr,
+                                       [sub["k"], sub["opc"], adm])
+        if result.returncode:
+            raise ValueError(f"pySim could not program the card (exit {result.returncode}): {output[-800:]}")
+        readback = read_sim_card()
+        if readback.get("imsi") != sub["imsi"] or readback.get("iccid") != iccid:
+            raise ValueError("Card write completed, but IMSI/ICCID read-back did not match. The EPC was not provisioned; do not deploy this card yet.")
+        provisioned = provision_mongo(sub)
+        with db() as conn:
+            conn.execute("INSERT OR REPLACE INTO subscribers(imsi,name,k,opc,amf,apn,msisdn,zone,device_type,critical,notes,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (sub["imsi"], sub["name"], sub["k"], sub["opc"], sub["amf"], sub["apn"], sub["msisdn"],
+                          sub["zone"], sub["device_type"], int(sub["critical"]), sub["notes"], int(time.time())))
+        update_sim_inventory(sub, "hss_provisioned", iccid)
+        event("sim", f"Programmed and read back owned USIM {iccid[-6:]} for UE {sub['imsi']}; {provisioned}")
+        return jsonify({"ok": True, "imsi": sub["imsi"], "iccid": iccid, "readback_verified": True,
+                        "hss_provisioned": True, "message": f"Card verified and {provisioned.lower()}",
+                        "programmed": ["ICCID", "IMSI", "K", "OPc", "MCC/MNC and MNC length", "Access class"]})
+    except subprocess.TimeoutExpired:
+        return jsonify({"ok": False, "error": "SIM programming timed out; remove and reinsert the card, then read it before retrying"}), 400
+    except (ValueError, PyMongoError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
 @app.get("/api/sim/production-plan")
 def sim_production_plan():
     cfg = settings()
@@ -2189,6 +2323,12 @@ def sim_production_plan():
                     "qci": int(cfg["default_qci"]), "ambr_downlink_mbps": int(cfg["ambr_downlink_mbps"]),
                     "ambr_uplink_mbps": int(cfg["ambr_uplink_mbps"])},
         "reader": reader,
+        "registration_write": {"ready": bool(reader["write_ready"] and reader["adm_configured"]),
+                               "card_type": reader["card_type"] or "Automatic detection",
+                               "adm_configured": reader["adm_configured"],
+                               "card_values": ["ICCID", "IMSI", "K", "OPc", "MCC", "MNC",
+                                               "MNC length", "Access class"],
+                               "core_values": ["IMSI", "K", "OPc", "AMF", "APN", "QoS", "AMBR"]},
         "steps": [
             {"id": "identity", "label": "Create device identity", "detail": "Assign the camera or IoT device, zone, IMSI, ICCID record, and APN."},
             {"id": "security", "label": "Generate authentication", "detail": "Create K and OP, derive OPc, and retain the protected production record."},
@@ -2202,13 +2342,13 @@ def sim_production_plan():
             {"file": "USIM authentication storage", "purpose": "K and OPc/OP; card-vendor-specific protected write", "required": True},
             {"file": "EF.AD", "purpose": "MNC length and administrative data", "required": True},
             {"file": "EF.ACC", "purpose": "Access class control", "required": True},
-            {"file": "EF.PLMNwAcT / EF.OPLMNwAcT", "purpose": "Preferred LTE PLMN selection", "required": False},
+            {"file": "EF.PLMNwAcT / EF.OPLMNwAcT", "purpose": "Preferred LTE PLMN selection; review after base programming", "required": True},
             {"file": "EF.HPLMNwAcT", "purpose": "Home-network search behavior", "required": False},
-            {"file": "EF.FPLMN", "purpose": "Forbidden PLMNs; clear stale entries during commissioning", "required": False},
-            {"file": "EF.EPSLOCI / EF.LOCI", "purpose": "Cached location; clear before first production attach", "required": False},
+            {"file": "EF.FPLMN", "purpose": "Forbidden PLMNs; confirm the home PLMN is not blocked", "required": True},
+            {"file": "EF.EPSLOCI / EF.LOCI", "purpose": "Cached location; reset before first production attach", "required": True},
         ],
         "selection_note": "Subscriber selection is complete when EF.IMSI, EF.AD, EF.ACC, the home and preferred PLMN selectors, forbidden list, and cached LTE location files are reviewed together with the matching EPC PLMN, TAC, APN, IP, DNS, QoS, and AMBR policy.",
-        "write_note": "Direct card writes remain card-vendor-specific and require the correct ADM credentials. Baiamonte LTE will not guess an ADM key or issue an unverified write command.",
+        "write_note": "Program + provision writes the registration-critical identity/authentication fields through pinned Osmocom pySim, reads back ICCID and IMSI, then creates the matching EPC/HSS record. Review the displayed standardized PLMN and location files because support varies by card model. Baiamonte LTE never guesses an ADM credential.",
         "profile_valid": profile["valid"], "profile_checks": profile["checks"],
     })
 
@@ -2402,6 +2542,7 @@ def sim_script():
         f"OPc: {sub['opc']}", f"AMF: {sub['amf']}",
         f"PIN1: {str(body.get('pin1', '')).strip() or 'Use card-vendor value'}",
         f"PUK1: {str(body.get('puk1', '')).strip() or 'Use card-vendor value'}",
+        f"ADM1: {str(body.get('adm', '')).strip() or ('Stored privately in Home Assistant' if str(cfg.get('sim_adm_key', '')).strip() else 'Required from card vendor')}",
         f"Home PLMN: {cfg['mcc']}-{cfg['mnc']}", f"APN: {sub['apn']}", f"TAC: {cfg['tac']}",
         "",
         "USIM PROGRAMMING REVIEW",
@@ -2418,7 +2559,7 @@ def sim_script():
         "",
         f"Network selection: home PLMN {cfg['mcc']}-{cfg['mnc']} · preferred {cfg['preferred_plmns']} · forbidden {cfg['forbidden_plmns'] or 'none'}",
         f"Subscriber policy: {cfg['subscriber_ip_version']} · MTU {cfg['subscriber_mtu']} · QCI {cfg['default_qci']} · AMBR {cfg['ambr_downlink_mbps']}/{cfg['ambr_uplink_mbps']} Mbps DL/UL",
-        "Do not issue guessed pySim write commands. File paths, encodings, and ADM access depend on the programmable USIM vendor.",
+        "Use Program SIM + EPC only with the correct card model and vendor ADM credential; review model-dependent policy files after base programming.",
     ])
     fd, path = tempfile.mkstemp(prefix="pysim-profile-", suffix=".txt", dir=DATA_DIR)
     with os.fdopen(fd, "w") as handle: handle.write(script + "\n")
