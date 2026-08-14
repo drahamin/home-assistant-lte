@@ -1,5 +1,5 @@
 name: Baiamonte LTE
-version: 0.6.5
+version: 0.6.6
 slug: lte_lab_manager
 description: Operate Baiamonte's production LTE data network for estate cameras, IoT devices, programmable SIMs, EPC, and Nokia radio.
 startup: application
@@ -60,6 +60,7 @@ options:
   mnc: "01"
   tac: 1
   network_name: Baiamonte LTE
+  sim_service_provider_name: rNET
   mme_group_id: 1
   mme_code: 1
   s1ap_port: 36412
@@ -127,6 +128,7 @@ schema:
   mnc: str
   tac: int
   network_name: str
+  sim_service_provider_name: str
   mme_group_id: int
   mme_code: int
   s1ap_port: port

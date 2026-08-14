@@ -45,6 +45,22 @@ _LAST_MAINTENANCE = 0
 _LOG_LOCK = threading.Lock()
 _SIM_PROGRAM_LOCK = threading.Lock()
 
+GIALER_ATR = "3B9F95801FC78031A073B6A10067CF3215CA9CD70920"
+SIM_CARD_PROFILES = {
+    GIALER_ATR: {
+        "type": "gialersim",
+        "label": "Gialer programmable LTE USIM",
+        "adm_setting": "sim_adm_key",
+        "adm_source": "Home Assistant private SIM ADM setting",
+    }
+}
+
+
+def sim_card_profile(atr):
+    """Return a copy so callers cannot mutate the known-card registry."""
+    profile = SIM_CARD_PROFILES.get(str(atr or "").replace(" ", "").upper())
+    return dict(profile) if profile else None
+
 
 def settings():
     defaults = {
@@ -55,7 +71,8 @@ def settings():
         "nokia_api_tls_verify": False, "nokia_control_enabled": False, "nokia_api_control_path": "",
         "epc_type": "nextepc", "mongodb_uri": "mongodb://192.0.2.151:27017/nextepc",
         "apn": "internet", "mcc": "001", "mnc": "01", "tac": 1,
-        "network_name": "Baiamonte LTE", "mme_group_id": 1, "mme_code": 1,
+        "network_name": "Baiamonte LTE", "sim_service_provider_name": "rNET",
+        "mme_group_id": 1, "mme_code": 1,
         "s1ap_port": 36412, "gtpu_port": 2152, "enb_id": 1, "cell_id": 1,
         "pci": 1, "lte_band": 2, "dl_earfcn": 900, "ul_earfcn": 18900,
         "channel_bandwidth_mhz": 10, "tx_power_dbm": 0, "access_class": 0,
@@ -2175,10 +2192,11 @@ def upload_commissioning():
 def sim_reader_status():
     shell_tool = shutil.which("pySim-shell.py") or shutil.which("pySim-shell")
     writer_tool = shutil.which("pySim-prog.py") or shutil.which("pySim-prog")
-    detected = []
+    devices, detected = [], []
     try:
         from smartcard.System import readers
-        detected = [str(reader) for reader in readers()]
+        devices = readers()
+        detected = [str(reader) for reader in devices]
     except Exception:
         # The PC/SC service may still be starting or no USB reader may be attached.
         pass
@@ -2191,12 +2209,30 @@ def sim_reader_status():
         index = min(max(int(cfg["sim_reader_index"]), 0), len(detected) - 1)
         selected = detected[index]
         selected_index = index
+    atr, card_profile = "", None
+    if enabled and selected_index is not None:
+        connection = None
+        try:
+            connection = devices[selected_index].createConnection()
+            connection.connect()
+            atr = bytes(connection.getATR()).hex().upper()
+            card_profile = sim_card_profile(atr)
+        except Exception:
+            # Discovery still succeeds when a card is absent or temporarily busy.
+            pass
+        finally:
+            if connection is not None:
+                try:
+                    connection.disconnect()
+                except Exception:
+                    pass
     return {"enabled": enabled, "pysim": bool(shell_tool or writer_tool),
             "pysim_shell": bool(shell_tool), "pysim_writer": bool(writer_tool),
             "usb_visible": Path("/dev/bus/usb").exists(), "readers": detected, "selected_reader": selected,
             "reader_name": requested_name, "reader_index": int(cfg["sim_reader_index"]), "selected_index": selected_index,
             "protocol": str(cfg["sim_reader_protocol"]), "card_type": str(cfg.get("sim_card_type", "")),
             "adm_configured": bool(str(cfg.get("sim_adm_key", "")).strip()),
+            "atr": atr, "card_profile": card_profile,
             "read_ready": bool(detected and enabled),
             "write_ready": bool(writer_tool and detected and enabled),
             "ready": bool(detected and enabled)}
@@ -2204,6 +2240,21 @@ def sim_reader_status():
 
 def _decode_swapped_bcd(data):
     return "".join(f"{byte:02X}"[1] + f"{byte:02X}"[0] for byte in data).rstrip("F")
+
+
+def sim_service_provider_name(cfg=None):
+    name = str((cfg or settings()).get("sim_service_provider_name", "rNET")).strip()
+    if not re.fullmatch(r"[\x20-\x7E]{1,16}", name):
+        raise ValueError("SIM friendly name must be 1–16 printable ASCII characters")
+    return name
+
+
+def _decode_service_provider_name(value):
+    if not value:
+        return ""
+    raw = bytes.fromhex(value)
+    # EF.SPN byte 1 is the display condition; rNET's GSM alphabet bytes are ASCII-compatible.
+    return raw[1:].rstrip(b"\xFF\x00").decode("ascii", errors="replace") if len(raw) > 1 else ""
 
 
 def read_sim_card():
@@ -2252,6 +2303,7 @@ def read_sim_card():
             return transmit([0x00, 0xB0, 0x00, 0x00, 0x00])
         files, errors = {}, {}
         definitions = {"iccid": ([], "2FE2"), "imsi": (["7F20"], "6F07"),
+                       "service_provider_name": (["7F20"], "6F46"),
                        "administrative_data": (["7F20"], "6FAD"), "access_class": (["7F20"], "6F78"),
                        "preferred_plmns": (["7F20"], "6F60"), "forbidden_plmns": (["7F20"], "6F7B"),
                        "location": (["7F20"], "6F7E")}
@@ -2267,7 +2319,9 @@ def read_sim_card():
             raw = bytes.fromhex(files["imsi"])
             decoded = _decode_swapped_bcd(raw[1:]) if len(raw) > 1 else ""
             imsi = decoded[1:] if decoded and decoded[0] in "189" else decoded
-        return {"reader": str(selected), "atr": atr, "iccid": iccid, "imsi": imsi,
+        service_provider_name = _decode_service_provider_name(files.get("service_provider_name", ""))
+        return {"reader": str(selected), "atr": atr, "card_profile": sim_card_profile(atr),
+                "iccid": iccid, "imsi": imsi, "service_provider_name": service_provider_name,
                 "files": files, "errors": errors, "read_only": True,
                 "note": "Protected authentication keys are not readable from a USIM."}
     except ValueError:
@@ -2302,6 +2356,7 @@ def sim_card_read():
             "recovery_available": bool(recovery and recovery["iccid"] == result.get("iccid")),
             "authentication": "K and OPc remain protected and are not read from the card.",
         }
+        result["adm_configured"] = bool(str(settings().get("sim_adm_key", "")).strip())
         event("sim", "Read non-secret identity and network files from the inserted SIM")
         return jsonify(result)
     except ValueError as exc:
@@ -2382,6 +2437,8 @@ def sim_card_program():
             raise ValueError(f"IMSI must begin with the configured home PLMN {mcc}-{mnc}")
         if sub["apn"] != str(cfg["apn"]):
             raise ValueError(f"APN must match the configured production APN {cfg['apn']}")
+        friendly_name = sim_service_provider_name(cfg)
+        detected_profile = status.get("card_profile") or {}
         adm = str(body.get("adm", "")).strip() or str(cfg.get("sim_adm_key", "")).strip()
         adm_format = str(cfg.get("sim_adm_format", "decimal"))
         if adm_format == "hex":
@@ -2392,13 +2449,14 @@ def sim_card_program():
             if not re.fullmatch(r"\d{4,16}", adm):
                 raise ValueError("Enter the card vendor's 4–16 digit ADM credential")
             adm_args = ["--pin-adm", adm]
-        card_type = str(cfg.get("sim_card_type", "")).strip()
+        card_type = str(cfg.get("sim_card_type", "")).strip() or str(detected_profile.get("type", "")).strip()
         if card_type and not re.fullmatch(r"[A-Za-z0-9_-]{2,40}", card_type):
             raise ValueError("The configured pySim card type contains unsupported characters")
         acc = f"{1 << min(max(int(cfg['access_class']), 0), 15):04X}"
         args = [writer, "--pcsc-device", str(status["selected_index"]), "--ki", sub["k"],
                 "--opc", sub["opc"], "--mcc", mcc, "--mnc", mnc, "--mnclen", str(len(mnc)),
-                "--imsi", sub["imsi"], "--iccid", iccid, "--acc", acc, *adm_args]
+                "--imsi", sub["imsi"], "--iccid", iccid, "--acc", acc,
+                "--name", friendly_name, *adm_args]
         if card_type:
             args.extend(["--type", card_type])
         save_sim_write_profile(sub, iccid, "pending_write")
@@ -2417,6 +2475,10 @@ def sim_card_program():
         if readback.get("imsi") != sub["imsi"] or readback.get("iccid") != iccid:
             set_sim_progress("verify", 70, "Card identity read-back did not match", "failed", sub["imsi"])
             raise ValueError("Card write completed, but IMSI/ICCID read-back did not match. The EPC was not provisioned; do not deploy this card yet.")
+        friendly_name_readback = str(readback.get("service_provider_name", "")).strip()
+        if friendly_name_readback and friendly_name_readback != friendly_name:
+            set_sim_progress("verify", 70, "SIM friendly-name read-back did not match", "failed", sub["imsi"])
+            raise ValueError("Card identity matched, but the SIM friendly-name read-back did not match. The EPC was not provisioned.")
         save_sim_write_profile(sub, iccid, "card_verified")
         update_sim_inventory(sub, "card_verified", iccid)
         set_sim_progress("provision", 85, "Provisioning the matching EPC/HSS subscriber", "running", sub["imsi"])
@@ -2437,9 +2499,12 @@ def sim_card_program():
         set_sim_progress("complete", 100, "SIM verified and EPC/HSS subscriber provisioned", "complete", sub["imsi"])
         event("sim", f"Programmed and read back owned USIM {iccid[-6:]} for UE {sub['imsi']}; {provisioned}")
         return jsonify({"ok": True, "imsi": sub["imsi"], "iccid": iccid, "readback_verified": True,
+                        "service_provider_name": friendly_name,
+                        "service_provider_name_verified": friendly_name_readback == friendly_name,
                         "hss_provisioned": True, "replacement": replacement,
                         "message": f"Card verified and {provisioned.lower()}",
-                        "programmed": ["ICCID", "IMSI", "K", "OPc", "MCC/MNC and MNC length", "Access class"]})
+                        "programmed": ["ICCID", "IMSI", "K", "OPc", "MCC/MNC and MNC length",
+                                       "Access class", "EF.SPN friendly name"]})
     except subprocess.TimeoutExpired:
         set_sim_progress("write", 35, "SIM programming timed out; inspect the card before retrying", "failed")
         return jsonify({"ok": False, "error": "SIM programming timed out; remove and reinsert the card, then read it before retrying"}), 400
@@ -2459,6 +2524,7 @@ def sim_production_plan():
     profile = production_network_profile()
     return jsonify({
         "network": {"mcc": str(cfg["mcc"]), "mnc": str(cfg["mnc"]), "apn": str(cfg["apn"]),
+                    "friendly_name": sim_service_provider_name(cfg),
                     "tac": int(cfg["tac"]), "plmn": profile["plmn"], "mnc_length": profile["mnc_length"],
                     "access_class": int(cfg["access_class"]), "preferred_plmns": str(cfg["preferred_plmns"]),
                     "forbidden_plmns": str(cfg["forbidden_plmns"]), "home_plmn_only": bool(cfg["home_plmn_only"]),
@@ -2466,11 +2532,16 @@ def sim_production_plan():
                     "qci": int(cfg["default_qci"]), "ambr_downlink_mbps": int(cfg["ambr_downlink_mbps"]),
                     "ambr_uplink_mbps": int(cfg["ambr_uplink_mbps"])},
         "reader": reader,
+        "carrier_profile": {"friendly_name": sim_service_provider_name(cfg), "plmn": profile["plmn"],
+                            "apn": str(cfg["apn"]), "sim_file": "EF.SPN",
+                            "selection": str(cfg["preferred_plmns"]),
+                            "purpose": "Baiamonte private LTE camera / IoT data profile"},
         "registration_write": {"ready": bool(reader["write_ready"] and reader["adm_configured"]),
-                               "card_type": reader["card_type"] or "Automatic detection",
+                               "card_type": ((reader.get("card_profile") or {}).get("type") or
+                                             reader["card_type"] or "Automatic detection"),
                                "adm_configured": reader["adm_configured"],
                                "card_values": ["ICCID", "IMSI", "K", "OPc", "MCC", "MNC",
-                                               "MNC length", "Access class"],
+                                               "MNC length", "Access class", "EF.SPN friendly name"],
                                "core_values": ["IMSI", "K", "OPc", "AMF", "APN", "QoS", "AMBR"]},
         "steps": [
             {"id": "identity", "label": "Create device identity", "detail": "Assign the camera or IoT device, zone, IMSI, ICCID record, and APN."},
@@ -2484,6 +2555,7 @@ def sim_production_plan():
             {"file": "EF.IMSI", "purpose": "Subscriber identity", "required": True},
             {"file": "USIM authentication storage", "purpose": "K and OPc/OP; card-vendor-specific protected write", "required": True},
             {"file": "EF.AD", "purpose": "MNC length and administrative data", "required": True},
+            {"file": "EF.SPN", "purpose": f"Friendly network name {sim_service_provider_name(cfg)}", "required": True},
             {"file": "EF.ACC", "purpose": "Access class control", "required": True},
             {"file": "EF.PLMNwAcT / EF.OPLMNwAcT", "purpose": "Preferred LTE PLMN selection; review after base programming", "required": True},
             {"file": "EF.HPLMNwAcT", "purpose": "Home-network search behavior", "required": False},
@@ -2686,12 +2758,14 @@ def sim_script():
         f"PIN1: {str(body.get('pin1', '')).strip() or 'Use card-vendor value'}",
         f"PUK1: {str(body.get('puk1', '')).strip() or 'Use card-vendor value'}",
         f"ADM1: {str(body.get('adm', '')).strip() or ('Stored privately in Home Assistant' if str(cfg.get('sim_adm_key', '')).strip() else 'Required from card vendor')}",
+        f"Friendly network name / EF.SPN: {sim_service_provider_name(cfg)}",
         f"Home PLMN: {cfg['mcc']}-{cfg['mnc']}", f"APN: {sub['apn']}", f"TAC: {cfg['tac']}",
         "",
         "USIM PROGRAMMING REVIEW",
         "[ ] Identify the exact card model and obtain its authorized ADM credentials",
         "[ ] Write and read back EF.IMSI",
         "[ ] Write K and OPc/OP using the card vendor's protected command",
+        f"[ ] Write and read back EF.SPN friendly name {sim_service_provider_name(cfg)}",
         "[ ] Verify EF.AD MNC length and EF.ACC access class",
         f"[ ] Set EF.PLMNwAcT / EF.OPLMNwAcT preference to {cfg['mcc']}-{cfg['mnc']} with E-UTRAN access when supported",
         "[ ] Review EF.HPLMNwAcT and clear stale EF.FPLMN entries",

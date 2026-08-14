@@ -1,12 +1,20 @@
 # Changelog
 
+## 0.6.6
+
+- Added the same physical-card ATR lookup used by Rahamin Pi LTE for the Gialer programmable LTE USIM.
+- Recognizes the known Gialer profile only after the inserted card's ATR matches and labels the detected card/profile source in the SIM workbench.
+- Uses the matched `gialersim` pySim card type automatically while keeping ADM in Home Assistant's private password setting or accepting it for one guarded write.
+- Added a configurable SIM carrier profile with the default friendly name `rNET`; physical programming writes it through pySim to EF.SPN and reads it back when the card exposes that file.
+- Displays the rNET friendly name, home PLMN, APN, selection policy, and SIM files together as one production carrier profile.
+
 ## 0.6.5
 
 - Added guarded replacement-card programming from an existing Baiamonte subscriber while keeping K and OPc server-side and out of the browser.
 - Added recoverable SIM write transactions: if ICCID/IMSI read-back succeeds but EPC/HSS provisioning fails, the retained private profile can be recovered after the inserted card identity is verified again.
 - Added server-side SIM programming progress, single-operation locking, and live write/verify/provision status in the SIM workbench.
 - Added inserted-card verification against the subscriber registry and non-secret production inventory.
-- Deliberately excludes hard-coded vendor ADM defaults; Baiamonte LTE continues to require the authorized card-specific credential.
+- Keeps vendor ADM credentials private and out of logs; known-card lookup is introduced separately in 0.6.6.
 
 ## 0.6.4
 

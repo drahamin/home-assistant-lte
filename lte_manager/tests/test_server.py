@@ -453,6 +453,20 @@ class AppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("GENERATE", response.get_json()["error"])
 
+    def test_gialer_atr_profile_is_exact_and_returns_a_copy(self):
+        profile = self.server.sim_card_profile(self.server.GIALER_ATR.lower())
+        self.assertEqual(profile["type"], "gialersim")
+        self.assertEqual(profile["adm_setting"], "sim_adm_key")
+        profile["type"] = "changed"
+        self.assertEqual(self.server.sim_card_profile(self.server.GIALER_ATR)["type"], "gialersim")
+        self.assertIsNone(self.server.sim_card_profile("3B00"))
+
+    def test_sim_friendly_name_validation_and_spn_decode(self):
+        self.assertEqual(self.server.sim_service_provider_name({"sim_service_provider_name": "rNET"}), "rNET")
+        self.assertEqual(self.server._decode_service_provider_name("00724E4554FFFFFFFF"), "rNET")
+        with self.assertRaises(ValueError):
+            self.server.sim_service_provider_name({"sim_service_provider_name": "name-is-longer-than-sixteen"})
+
     def test_sim_card_read_requires_opt_in_and_confirmation(self):
         self.assertEqual(self.client.post("/api/sim/card/read", json={}).status_code, 400)
         response = self.client.post("/api/sim/card/read", json={"confirm": "READ"})
@@ -463,16 +477,17 @@ class AppTests(unittest.TestCase):
         body = {"confirm": "PROGRAM 001010000000123", "name": "Gate camera",
                 "device_type": "Camera", "zone": "Estate Gate", "critical": True, "notes": "Production",
                 "imsi": "001010000000123", "iccid": "8900101000000000123", "k": "A" * 32,
-                "opc": "B" * 32, "amf": "8000", "apn": "internet", "msisdn": "", "adm": "12345678"}
-        cfg = {"sim_programming_enabled": True, "sim_reader_index": 0, "sim_card_type": "sysmoISIM-SJA5",
-               "sim_adm_key": "", "sim_adm_format": "decimal", "mcc": "001", "mnc": "01",
+                "opc": "B" * 32, "amf": "8000", "apn": "internet", "msisdn": "", "adm": ""}
+        cfg = {"sim_programming_enabled": True, "sim_reader_index": 0, "sim_card_type": "",
+               "sim_adm_key": "12345678", "sim_adm_format": "decimal", "mcc": "001", "mnc": "01",
                "access_class": 0, "apn": "internet", "epc_type": "local"}
         original = self.server.settings
         try:
             self.server.settings = lambda: cfg
             completed = subprocess.CompletedProcess(["pySim-prog.py"], 0, "done", "")
             with patch.object(self.server.shutil, "which", side_effect=lambda name: "/usr/bin/pySim-prog.py" if "prog" in name else None), \
-                 patch.object(self.server, "sim_reader_status", return_value={"selected_reader": "USB", "selected_index": 0}), \
+                 patch.object(self.server, "sim_reader_status", return_value={"selected_reader": "USB", "selected_index": 0,
+                                                                                "card_profile": self.server.sim_card_profile(self.server.GIALER_ATR)}), \
                  patch.object(self.server.subprocess, "run", return_value=completed) as run, \
                  patch.object(self.server, "read_sim_card", return_value={"imsi": body["imsi"], "iccid": body["iccid"]}), \
                  patch.object(self.server, "provision_mongo", return_value="Provisioned to EPC"):
@@ -485,6 +500,9 @@ class AppTests(unittest.TestCase):
             self.assertIn("--opc", args)
             self.assertIn("--mnclen", args)
             self.assertIn("--acc", args)
+            self.assertEqual(args[args.index("--name") + 1], "rNET")
+            self.assertEqual(args[args.index("--pin-adm") + 1], "12345678")
+            self.assertEqual(args[args.index("--type") + 1], "gialersim")
             self.assertNotIn(body["k"], str(data))
         finally:
             with self.server.db() as conn:

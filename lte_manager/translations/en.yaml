@@ -19,6 +19,9 @@ configuration:
     name: MNC
   tac:
     name: Tracking area code
+  sim_service_provider_name:
+    name: SIM friendly network name
+    description: 1–16 character name written to EF.SPN on supported programmable SIMs (default rNET).
   sim_programming_enabled:
     name: Enable physical SIM writes
     description: Requires a compatible PC/SC reader and pySim-shell. Writes still require confirmation.
