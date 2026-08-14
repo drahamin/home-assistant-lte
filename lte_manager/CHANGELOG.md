@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.4
+
+- Added a guarded **Program SIM + EPC** transaction that writes registration-critical ICCID, IMSI, K, OPc, MCC/MNC, MNC length, and access class with pinned official Osmocom pySim, reads ICCID/IMSI back, and only then provisions the matching EPC/HSS record.
+- Added private Home Assistant settings for the vendor ADM credential, ADM format, and optional exact pySim card type; ADM, K, and OPc are excluded from public settings and logs.
+- Expanded the SIM readiness view and production checklist for PLMN selectors, forbidden-network review, cached-location reset, APN, and EPC/HSS policy.
+- Added measured download/upload traffic-history graphs with 6-hour, 24-hour, and 7-day ranges, totals, current rates, and explicit not-measured states.
+- Added configurable background EPC traffic sampling and byte counters alongside the existing packet evidence.
+
 ## 0.6.3
 
 - Reduced the web service from two worker processes to one four-thread worker with bounded request recycling for a smaller Home Assistant memory footprint.

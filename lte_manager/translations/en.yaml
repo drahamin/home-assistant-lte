@@ -22,9 +22,21 @@ configuration:
   sim_programming_enabled:
     name: Enable physical SIM writes
     description: Requires a compatible PC/SC reader and pySim-shell. Writes still require confirmation.
+  sim_card_type:
+    name: pySim card type
+    description: Optional exact pySim model name; leave blank for safe automatic detection.
+  sim_adm_key:
+    name: SIM ADM credential
+    description: Card-vendor programming credential stored privately in Home Assistant.
+  sim_adm_format:
+    name: SIM ADM format
+    description: Select decimal digits or a 16-character hexadecimal ADM credential.
   monitor_interval_seconds:
     name: Network monitor interval
     description: Seconds between background availability checks (30–900 recommended).
+  traffic_monitor_interval_seconds:
+    name: Traffic graph interval
+    description: Seconds between measured EPC traffic-counter samples (60–3600).
   history_retention_days:
     name: Connection history retention
     description: Days of network-status samples to keep locally.

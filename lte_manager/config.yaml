@@ -1,5 +1,5 @@
 name: Baiamonte LTE
-version: 0.6.3
+version: 0.6.4
 slug: lte_lab_manager
 description: Operate Baiamonte's production LTE data network for estate cameras, IoT devices, programmable SIMs, EPC, and Nokia radio.
 startup: application
@@ -80,7 +80,11 @@ options:
   sim_reader_name: ""
   sim_reader_index: 0
   sim_reader_protocol: auto
+  sim_card_type: ""
+  sim_adm_key: ""
+  sim_adm_format: decimal
   monitor_interval_seconds: 60
+  traffic_monitor_interval_seconds: 300
   history_retention_days: 30
   event_retention_days: 90
   communications_enabled: false
@@ -143,7 +147,11 @@ schema:
   sim_reader_name: str
   sim_reader_index: int
   sim_reader_protocol: list(auto|T0|T1)
+  sim_card_type: str
+  sim_adm_key: password
+  sim_adm_format: list(decimal|hex)
   monitor_interval_seconds: int
+  traffic_monitor_interval_seconds: int
   history_retention_days: int
   event_retention_days: int
   communications_enabled: bool
