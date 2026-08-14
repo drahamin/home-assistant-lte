@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.5
+
+- Added guarded replacement-card programming from an existing Baiamonte subscriber while keeping K and OPc server-side and out of the browser.
+- Added recoverable SIM write transactions: if ICCID/IMSI read-back succeeds but EPC/HSS provisioning fails, the retained private profile can be recovered after the inserted card identity is verified again.
+- Added server-side SIM programming progress, single-operation locking, and live write/verify/provision status in the SIM workbench.
+- Added inserted-card verification against the subscriber registry and non-secret production inventory.
+- Deliberately excludes hard-coded vendor ADM defaults; Baiamonte LTE continues to require the authorized card-specific credential.
+
 ## 0.6.4
 
 - Added a guarded **Program SIM + EPC** transaction that writes registration-critical ICCID, IMSI, K, OPc, MCC/MNC, MNC length, and access class with pinned official Osmocom pySim, reads ICCID/IMSI back, and only then provisions the matching EPC/HSS record.

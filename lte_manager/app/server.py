@@ -43,6 +43,7 @@ _DB_INITIALIZED = False
 _MAINTENANCE_LOCK = threading.Lock()
 _LAST_MAINTENANCE = 0
 _LOG_LOCK = threading.Lock()
+_SIM_PROGRAM_LOCK = threading.Lock()
 
 
 def settings():
@@ -220,6 +221,13 @@ def _initialize_db():
             attach_confirmed INTEGER NOT NULL DEFAULT 0, data_verified INTEGER NOT NULL DEFAULT 0,
             updated_at INTEGER NOT NULL
         )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS sim_write_profiles (
+            imsi TEXT PRIMARY KEY, iccid TEXT NOT NULL, name TEXT NOT NULL,
+            k TEXT NOT NULL, opc TEXT NOT NULL, amf TEXT NOT NULL, apn TEXT NOT NULL,
+            msisdn TEXT NOT NULL DEFAULT '', zone TEXT NOT NULL, device_type TEXT NOT NULL,
+            critical INTEGER NOT NULL DEFAULT 0, notes TEXT NOT NULL DEFAULT '',
+            stage TEXT NOT NULL, updated_at INTEGER NOT NULL
+        )""")
         conn.execute("CREATE INDEX IF NOT EXISTS events_created_at_idx ON events(created_at)")
         conn.commit()
         conn.close()
@@ -275,6 +283,55 @@ def update_sim_inventory(sub, stage, iccid="", attach_confirmed=False, data_veri
                 data_verified=MAX(sim_inventory.data_verified,excluded.data_verified),updated_at=excluded.updated_at""",
                      (sub["imsi"], safe_iccid, sub["name"], sub["device_type"], sub["zone"], stage,
                       int(attach_confirmed), int(data_verified), now))
+
+
+def set_sim_progress(stage, percent, message, state="running", imsi=""):
+    payload = {"stage": str(stage), "percent": min(max(int(percent), 0), 100),
+               "message": str(message)[:240], "state": str(state),
+               "imsi": str(imsi), "updated_at": int(time.time())}
+    with db() as conn:
+        conn.execute("INSERT OR REPLACE INTO app_settings(key,value) VALUES('sim_programming_progress',?)",
+                     (json.dumps(payload),))
+    return payload
+
+
+def sim_progress():
+    with db() as conn:
+        row = conn.execute("SELECT value FROM app_settings WHERE key='sim_programming_progress'").fetchone()
+    if row:
+        try:
+            return json.loads(row["value"])
+        except (TypeError, json.JSONDecodeError):
+            pass
+    return {"stage": "idle", "percent": 0, "message": "No SIM operation is running",
+            "state": "idle", "imsi": "", "updated_at": 0}
+
+
+def save_sim_write_profile(sub, iccid, stage):
+    with db() as conn:
+        conn.execute("""INSERT OR REPLACE INTO sim_write_profiles
+            (imsi,iccid,name,k,opc,amf,apn,msisdn,zone,device_type,critical,notes,stage,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (sub["imsi"], iccid, sub["name"], sub["k"], sub["opc"], sub["amf"], sub["apn"],
+             sub["msisdn"], sub["zone"], sub["device_type"], int(sub["critical"]), sub["notes"],
+             stage, int(time.time())))
+
+
+def subscriber_for_sim_write(body):
+    source_imsi = str(body.get("subscriber_imsi", "")).strip()
+    if not source_imsi:
+        return validate_subscriber(body), False
+    if not IMSI_RE.fullmatch(source_imsi):
+        raise ValueError("Choose a valid existing subscriber for the replacement card")
+    supplied_imsi = str(body.get("imsi", "")).strip()
+    if supplied_imsi and supplied_imsi != source_imsi:
+        raise ValueError("Replacement-card IMSI must match the selected subscriber")
+    with db() as conn:
+        row = conn.execute("""SELECT imsi,name,k,opc,amf,apn,msisdn,zone,device_type,critical,notes
+                            FROM subscribers WHERE imsi=?""", (source_imsi,)).fetchone()
+    if not row:
+        raise ValueError("The selected subscriber no longer exists")
+    return dict(row), True
 
 
 def tcp_check(host, port, timeout=0.8):
@@ -752,6 +809,7 @@ def prune_operational_data(force=False):
             conn.execute("DELETE FROM status_history WHERE sampled_at < ?", (now - history_days * 86400,))
             conn.execute("DELETE FROM traffic_history WHERE sampled_at < ?", (now - history_days * 86400,))
             conn.execute("DELETE FROM events WHERE created_at < ?", (now - event_days * 86400,))
+            conn.execute("DELETE FROM sim_write_profiles WHERE updated_at < ?", (now - 30 * 86400,))
         _LAST_MAINTENANCE = now
         return True
 
@@ -2230,6 +2288,20 @@ def sim_card_read():
         return jsonify({"error": "Confirm the read-only card inspection with READ"}), 400
     try:
         result = read_sim_card()
+        with db() as conn:
+            subscriber = conn.execute("SELECT name FROM subscribers WHERE imsi=?", (result.get("imsi", ""),)).fetchone()
+            inventory = conn.execute("SELECT imsi,iccid,stage FROM sim_inventory WHERE imsi=? OR iccid=? ORDER BY updated_at DESC LIMIT 1",
+                                     (result.get("imsi", ""), result.get("iccid", ""))).fetchone()
+            recovery = conn.execute("SELECT imsi,iccid,stage FROM sim_write_profiles WHERE imsi=?",
+                                    (result.get("imsi", ""),)).fetchone()
+        result["verification"] = {
+            "subscriber_match": bool(subscriber), "subscriber_name": subscriber["name"] if subscriber else "",
+            "inventory_match": bool(inventory and inventory["imsi"] == result.get("imsi") and
+                                    inventory["iccid"] == result.get("iccid")),
+            "inventory_stage": inventory["stage"] if inventory else "",
+            "recovery_available": bool(recovery and recovery["iccid"] == result.get("iccid")),
+            "authentication": "K and OPc remain protected and are not read from the card.",
+        }
         event("sim", "Read non-secret identity and network files from the inserted SIM")
         return jsonify(result)
     except ValueError as exc:
@@ -2244,11 +2316,55 @@ def _redact_writer_output(text, secrets_to_hide):
     return clean
 
 
+@app.get("/api/sim/progress")
+def sim_progress_api():
+    return jsonify(sim_progress())
+
+
+@app.post("/api/sim/card/recover")
+def sim_card_recover():
+    body = request.get_json(silent=True) or {}
+    imsi = str(body.get("imsi", "")).strip()
+    try:
+        if not IMSI_RE.fullmatch(imsi) or body.get("confirm") != f"RECOVER {imsi}":
+            raise ValueError(f"Confirm EPC recovery with RECOVER {imsi or '<IMSI>'}")
+        identity = read_sim_card()
+        with db() as conn:
+            row = conn.execute("SELECT * FROM sim_write_profiles WHERE imsi=?", (imsi,)).fetchone()
+        if not row:
+            raise ValueError("No recoverable card-write transaction exists for this IMSI")
+        if identity.get("imsi") != imsi or identity.get("iccid") != row["iccid"]:
+            raise ValueError("Inserted SIM identity does not match the recoverable write transaction")
+        sub = {key: row[key] for key in ("imsi", "name", "k", "opc", "amf", "apn", "msisdn",
+                                              "zone", "device_type", "critical", "notes")}
+        set_sim_progress("provision", 85, "Recovering the verified SIM into the EPC/HSS", "running", imsi)
+        provisioned = provision_mongo(sub)
+        with db() as conn:
+            conn.execute("INSERT OR REPLACE INTO subscribers(imsi,name,k,opc,amf,apn,msisdn,zone,device_type,critical,notes,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (sub["imsi"], sub["name"], sub["k"], sub["opc"], sub["amf"], sub["apn"], sub["msisdn"],
+                          sub["zone"], sub["device_type"], int(sub["critical"]), sub["notes"], int(time.time())))
+            conn.execute("DELETE FROM sim_write_profiles WHERE imsi=?", (imsi,))
+        update_sim_inventory(sub, "hss_provisioned", identity["iccid"])
+        set_sim_progress("complete", 100, "Verified SIM recovered into the EPC/HSS", "complete", imsi)
+        event("sim", f"Recovered verified USIM {identity['iccid'][-6:]} for UE {imsi}; {provisioned}")
+        return jsonify({"ok": True, "imsi": imsi, "iccid": identity["iccid"],
+                        "hss_provisioned": True, "message": f"Verified card recovered and {provisioned.lower()}"})
+    except PyMongoError:
+        set_sim_progress("provision", 85, "EPC/HSS provisioning failed; the verified recovery transaction remains available", "failed", imsi)
+        return jsonify({"ok": False, "error": "EPC/HSS provisioning failed; the verified recovery transaction remains available"}), 502
+    except ValueError as exc:
+        set_sim_progress("provision", 85, str(exc), "failed", imsi)
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
 @app.post("/api/sim/card/program")
 def sim_card_program():
     body = request.get_json(silent=True) or {}
+    if not _SIM_PROGRAM_LOCK.acquire(blocking=False):
+        return jsonify({"ok": False, "error": "Another SIM programming operation is already running"}), 409
     try:
-        sub = validate_subscriber(body)
+        sub, replacement = subscriber_for_sim_write(body)
+        set_sim_progress("validate", 5, "Validating card and subscriber settings", "running", sub["imsi"])
         cfg = settings()
         if body.get("confirm") != f"PROGRAM {sub['imsi']}":
             raise ValueError(f"Confirm this card write with PROGRAM {sub['imsi']}")
@@ -2285,28 +2401,55 @@ def sim_card_program():
                 "--imsi", sub["imsi"], "--iccid", iccid, "--acc", acc, *adm_args]
         if card_type:
             args.extend(["--type", card_type])
+        save_sim_write_profile(sub, iccid, "pending_write")
+        set_sim_progress("write", 35, "Programming the owned SIM; do not remove it", "running", sub["imsi"])
         result = subprocess.run(args, capture_output=True, text=True, timeout=90, check=False)
         output = _redact_writer_output(result.stdout + "\n" + result.stderr,
                                        [sub["k"], sub["opc"], adm])
         if result.returncode:
+            with db() as conn:
+                conn.execute("DELETE FROM sim_write_profiles WHERE imsi=? AND stage='pending_write'", (sub["imsi"],))
+            set_sim_progress("write", 35, "Card programming failed; inspect the redacted result", "failed", sub["imsi"])
             raise ValueError(f"pySim could not program the card (exit {result.returncode}): {output[-800:]}")
+        save_sim_write_profile(sub, iccid, "written_unverified")
+        set_sim_progress("verify", 70, "Reading back ICCID and IMSI", "running", sub["imsi"])
         readback = read_sim_card()
         if readback.get("imsi") != sub["imsi"] or readback.get("iccid") != iccid:
+            set_sim_progress("verify", 70, "Card identity read-back did not match", "failed", sub["imsi"])
             raise ValueError("Card write completed, but IMSI/ICCID read-back did not match. The EPC was not provisioned; do not deploy this card yet.")
-        provisioned = provision_mongo(sub)
+        save_sim_write_profile(sub, iccid, "card_verified")
+        update_sim_inventory(sub, "card_verified", iccid)
+        set_sim_progress("provision", 85, "Provisioning the matching EPC/HSS subscriber", "running", sub["imsi"])
+        try:
+            provisioned = provision_mongo(sub)
+        except PyMongoError:
+            set_sim_progress("provision", 85, "SIM verified; EPC/HSS provisioning failed and can be recovered", "failed", sub["imsi"])
+            event("sim", f"Verified USIM {iccid[-6:]} for UE {sub['imsi']}; EPC/HSS provisioning failed")
+            return jsonify({"ok": False, "error": "SIM was programmed and verified, but EPC/HSS provisioning failed",
+                            "sim_written": True, "readback_verified": True, "recovery_available": True,
+                            "imsi": sub["imsi"], "iccid": iccid}), 502
         with db() as conn:
             conn.execute("INSERT OR REPLACE INTO subscribers(imsi,name,k,opc,amf,apn,msisdn,zone,device_type,critical,notes,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                          (sub["imsi"], sub["name"], sub["k"], sub["opc"], sub["amf"], sub["apn"], sub["msisdn"],
                           sub["zone"], sub["device_type"], int(sub["critical"]), sub["notes"], int(time.time())))
+            conn.execute("DELETE FROM sim_write_profiles WHERE imsi=?", (sub["imsi"],))
         update_sim_inventory(sub, "hss_provisioned", iccid)
+        set_sim_progress("complete", 100, "SIM verified and EPC/HSS subscriber provisioned", "complete", sub["imsi"])
         event("sim", f"Programmed and read back owned USIM {iccid[-6:]} for UE {sub['imsi']}; {provisioned}")
         return jsonify({"ok": True, "imsi": sub["imsi"], "iccid": iccid, "readback_verified": True,
-                        "hss_provisioned": True, "message": f"Card verified and {provisioned.lower()}",
+                        "hss_provisioned": True, "replacement": replacement,
+                        "message": f"Card verified and {provisioned.lower()}",
                         "programmed": ["ICCID", "IMSI", "K", "OPc", "MCC/MNC and MNC length", "Access class"]})
     except subprocess.TimeoutExpired:
+        set_sim_progress("write", 35, "SIM programming timed out; inspect the card before retrying", "failed")
         return jsonify({"ok": False, "error": "SIM programming timed out; remove and reinsert the card, then read it before retrying"}), 400
     except (ValueError, PyMongoError) as exc:
+        progress = sim_progress()
+        if progress.get("state") == "running":
+            set_sim_progress(progress.get("stage", "validate"), progress.get("percent", 5), str(exc), "failed", progress.get("imsi", ""))
         return jsonify({"ok": False, "error": str(exc)}), 400
+    finally:
+        _SIM_PROGRAM_LOCK.release()
 
 
 @app.get("/api/sim/production-plan")

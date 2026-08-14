@@ -492,6 +492,74 @@ class AppTests(unittest.TestCase):
                 conn.execute("DELETE FROM sim_inventory WHERE imsi=?", (body["imsi"],))
             self.server.settings = original
 
+    def test_replacement_sim_uses_saved_authentication_without_returning_it(self):
+        imsi, iccid, key, opc = "001010000000124", "8900101000000000124", "C" * 32, "D" * 32
+        cfg = {"sim_programming_enabled": True, "sim_reader_index": 0, "sim_card_type": "",
+               "sim_adm_key": "", "sim_adm_format": "decimal", "mcc": "001", "mnc": "01",
+               "access_class": 0, "apn": "internet", "epc_type": "local"}
+        original = self.server.settings
+        try:
+            with self.server.db() as conn:
+                conn.execute("INSERT INTO subscribers(imsi,name,k,opc,amf,apn,msisdn,zone,device_type,critical,notes,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                             (imsi, "Orchard camera", key, opc, "8000", "internet", "", "North Vineyard", "Camera", 1, "", 1))
+            self.server.settings = lambda: cfg
+            completed = subprocess.CompletedProcess(["pySim-prog.py"], 0, "done", "")
+            body = {"subscriber_imsi": imsi, "imsi": imsi, "iccid": iccid, "adm": "12345678",
+                    "confirm": f"PROGRAM {imsi}"}
+            with patch.object(self.server.shutil, "which", return_value="/usr/bin/pySim-prog.py"), \
+                 patch.object(self.server, "sim_reader_status", return_value={"selected_reader": "USB", "selected_index": 0}), \
+                 patch.object(self.server.subprocess, "run", return_value=completed) as run, \
+                 patch.object(self.server, "read_sim_card", return_value={"imsi": imsi, "iccid": iccid}), \
+                 patch.object(self.server, "provision_mongo", return_value="Provisioned to EPC"):
+                response = self.client.post("/api/sim/card/program", json=body)
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.get_json()["replacement"])
+            self.assertIn(key, run.call_args.args[0])
+            self.assertNotIn(key, str(response.get_json()))
+        finally:
+            with self.server.db() as conn:
+                conn.execute("DELETE FROM subscribers WHERE imsi=?", (imsi,))
+                conn.execute("DELETE FROM sim_inventory WHERE imsi=?", (imsi,))
+                conn.execute("DELETE FROM sim_write_profiles WHERE imsi=?", (imsi,))
+            self.server.settings = original
+
+    def test_verified_card_can_recover_after_epc_provisioning_failure(self):
+        imsi, iccid = "001010000000125", "8900101000000000125"
+        body = {"confirm": f"PROGRAM {imsi}", "name": "Irrigation sensor", "device_type": "Environmental sensor",
+                "zone": "South Vineyard", "critical": False, "notes": "Production", "imsi": imsi, "iccid": iccid,
+                "k": "E" * 32, "opc": "F" * 32, "amf": "8000", "apn": "internet", "msisdn": "", "adm": "12345678"}
+        cfg = {"sim_programming_enabled": True, "sim_reader_index": 0, "sim_card_type": "",
+               "sim_adm_key": "", "sim_adm_format": "decimal", "mcc": "001", "mnc": "01",
+               "access_class": 0, "apn": "internet", "epc_type": "nextepc"}
+        original = self.server.settings
+        try:
+            self.server.settings = lambda: cfg
+            completed = subprocess.CompletedProcess(["pySim-prog.py"], 0, "done", "")
+            with patch.object(self.server.shutil, "which", return_value="/usr/bin/pySim-prog.py"), \
+                 patch.object(self.server, "sim_reader_status", return_value={"selected_reader": "USB", "selected_index": 0}), \
+                 patch.object(self.server.subprocess, "run", return_value=completed), \
+                 patch.object(self.server, "read_sim_card", return_value={"imsi": imsi, "iccid": iccid}), \
+                 patch.object(self.server, "provision_mongo", side_effect=self.server.PyMongoError("offline")):
+                failed = self.client.post("/api/sim/card/program", json=body)
+            self.assertEqual(failed.status_code, 502)
+            self.assertTrue(failed.get_json()["recovery_available"])
+            with self.server.db() as conn:
+                pending = conn.execute("SELECT stage FROM sim_write_profiles WHERE imsi=?", (imsi,)).fetchone()
+            self.assertEqual(pending["stage"], "card_verified")
+            with patch.object(self.server, "read_sim_card", return_value={"imsi": imsi, "iccid": iccid}), \
+                 patch.object(self.server, "provision_mongo", return_value="Provisioned to EPC"):
+                recovered = self.client.post("/api/sim/card/recover", json={"imsi": imsi, "confirm": f"RECOVER {imsi}"})
+            self.assertEqual(recovered.status_code, 200)
+            with self.server.db() as conn:
+                self.assertIsNotNone(conn.execute("SELECT imsi FROM subscribers WHERE imsi=?", (imsi,)).fetchone())
+                self.assertIsNone(conn.execute("SELECT imsi FROM sim_write_profiles WHERE imsi=?", (imsi,)).fetchone())
+        finally:
+            with self.server.db() as conn:
+                conn.execute("DELETE FROM subscribers WHERE imsi=?", (imsi,))
+                conn.execute("DELETE FROM sim_inventory WHERE imsi=?", (imsi,))
+                conn.execute("DELETE FROM sim_write_profiles WHERE imsi=?", (imsi,))
+            self.server.settings = original
+
     def test_traffic_history_calculates_measured_rates(self):
         now = int(self.server.time.time())
         with self.server.db() as conn:

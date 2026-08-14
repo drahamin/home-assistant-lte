@@ -1,6 +1,6 @@
 # Baiamonte LTE
 
-A Home Assistant app (formerly called an add-on) for controlling Baiamonte’s internal LTE network. It provides a light/dark vineyard operations interface for EPC and Nokia eNodeB health, subscriber traffic and connection gauges, an expanded network visibility board, incident history, safe troubleshooting tools, searchable logs, vineyard-zone device grouping, availability alerts, UE subscriber provisioning, guarded EPC Internet routing, optional PBX voice/text dispatch, commissioning-file intake, and programmable test-SIM preparation with Milenage OPc generation.
+A Home Assistant app (formerly called an add-on) for controlling Baiamonte’s internal LTE network. It provides a light/dark vineyard operations interface for EPC and Nokia eNodeB health, subscriber traffic and connection gauges, an expanded network visibility board, incident history, safe troubleshooting tools, searchable logs, vineyard-zone device grouping, availability alerts, UE subscriber provisioning, guarded EPC Internet routing, optional PBX voice/text dispatch, commissioning-file intake, and guarded programmable-USIM preparation, replacement, read-back, and EPC/HSS recovery with Milenage OPc generation.
 
 Preconfigured defaults:
 
