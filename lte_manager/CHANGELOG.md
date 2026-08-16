@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.7
+
+- Added a two-way Nokia radio-profile editor for MCC, MNC, TAC, eNodeB/cell identity, PCI, LTE band, DL/UL EARFCN, bandwidth, and transmit power.
+- Added live Nokia-to-app comparison states with exact matches, differences, unavailable fields, validation errors, and fresh readback confirmation.
+- Added guarded import of reported Nokia values into the persistent Baiamonte LTE target profile.
+- Added guarded app-to-Nokia configuration through the explicitly configured licensed control gateway; gateway acceptance is kept separate from verified Nokia readback.
+- Added range, PLMN-length, bandwidth-choice, and FDD EARFCN-pair validation before either side can be changed.
+
 ## 0.6.6
 
 - Added the same physical-card ATR lookup used by Rahamin Pi LTE for the Gialer programmable LTE USIM.

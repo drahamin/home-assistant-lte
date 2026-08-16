@@ -285,6 +285,71 @@ class AppTests(unittest.TestCase):
         finally:
             self.server.settings = original
 
+    def test_nokia_configuration_validates_band_pair_and_ranges(self):
+        values = {"mcc": "001", "mnc": "01", "tac": 1, "enb_id": 7, "cell_id": 3,
+                  "pci": 21, "lte_band": 2, "dl_earfcn": 900, "ul_earfcn": 18901,
+                  "channel_bandwidth_mhz": 10, "tx_power_dbm": 20}
+        _, errors = self.server.validate_nokia_configuration(values)
+        self.assertIn("ul_earfcn", errors)
+        values["ul_earfcn"] = 18900
+        clean, errors = self.server.validate_nokia_configuration(values)
+        self.assertFalse(errors)
+        self.assertEqual(clean["mnc"], "01")
+
+    def test_nokia_configuration_snapshot_compares_live_values(self):
+        original = self.server.settings
+        cfg = {"mcc": "001", "mnc": "01", "tac": 1, "enb_id": 7, "cell_id": 3,
+               "pci": 21, "lte_band": 2, "dl_earfcn": 900, "ul_earfcn": 18900,
+               "channel_bandwidth_mhz": 10, "tx_power_dbm": 20}
+        feed = {"sampled_at": 123, "statuses": [
+            {"label": "MCC", "value": "001"}, {"label": "MNC", "value": "01"},
+            {"label": "Tracking area", "value": "1"}, {"label": "eNodeB ID", "value": "7"},
+            {"label": "Cell ID", "value": "3"}, {"label": "PCI", "value": "22"},
+            {"label": "LTE band", "value": "Band 2"}, {"label": "DL EARFCN", "value": "900"},
+            {"label": "UL EARFCN", "value": "18900"}, {"label": "Bandwidth", "value": "10 MHz"},
+            {"label": "Transmit power", "value": "20 dBm"}]}
+        try:
+            self.server.settings = lambda: cfg
+            with patch.object(self.server, "nokia_control_status", return_value={"ready": True}):
+                data = self.server.nokia_configuration_snapshot(feed)
+            comparison = {item["key"]: item for item in data["comparisons"]}
+            self.assertEqual(comparison["pci"]["state"], "mismatch")
+            self.assertEqual(comparison["channel_bandwidth_mhz"]["state"], "match")
+            self.assertEqual(data["reported_fields"], 11)
+        finally:
+            self.server.settings = original
+
+    def test_nokia_configuration_can_save_app_and_apply_gateway(self):
+        values = {"mcc": "001", "mnc": "01", "tac": 2, "enb_id": 7, "cell_id": 3,
+                  "pci": 21, "lte_band": 2, "dl_earfcn": 900, "ul_earfcn": 18900,
+                  "channel_bandwidth_mhz": 10, "tx_power_dbm": 20}
+        original = self.server.settings
+        try:
+            rejected = self.client.post("/api/nokia/configuration", json={"action": "save_app", "values": values})
+            self.assertEqual(rejected.status_code, 400)
+            saved = self.client.post("/api/nokia/configuration", json={"action": "save_app", "values": values,
+                                                                        "confirm": "SAVE APP"})
+            self.assertEqual(saved.status_code, 200)
+            self.assertEqual(self.server.settings()["tac"], 2)
+            cfg = {**values, "nokia_control_enabled": True, "nokia_api_enabled": True,
+                   "nokia_api_control_path": "/control"}
+            self.server.settings = lambda: cfg
+            with patch.object(self.server, "_nokia_api_request",
+                              return_value=({"authenticated": True, "status": 202}, b'{"accepted":true}')) as gateway:
+                applied = self.client.post("/api/nokia/configuration", json={"action": "apply_nokia", "values": values,
+                                                                              "confirm": "APPLY NOKIA"})
+            self.assertEqual(applied.status_code, 200)
+            payload = gateway.call_args.kwargs["json_body"]
+            self.assertEqual(payload["action"], "apply_configuration")
+            self.assertEqual(payload["values"]["pci"], 21)
+            reset = self.client.post("/api/nokia/configuration", json={"action": "reset_app",
+                                                                         "confirm": "RESET APP"})
+            self.assertEqual(reset.status_code, 200)
+            self.assertFalse(self.server.NOKIA_PROFILE_OVERRIDES.exists())
+        finally:
+            self.server.settings = original
+            self.server.NOKIA_PROFILE_OVERRIDES.unlink(missing_ok=True)
+
     def test_network_visibility_has_actionable_status_lights(self):
         with patch.object(self.server, "ping_check", return_value=True), \
              patch.object(self.server, "tcp_check", return_value={"online": True, "latency_ms": 2}), \
