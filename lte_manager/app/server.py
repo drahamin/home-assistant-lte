@@ -44,6 +44,11 @@ _MAINTENANCE_LOCK = threading.Lock()
 _LAST_MAINTENANCE = 0
 _LOG_LOCK = threading.Lock()
 _SIM_PROGRAM_LOCK = threading.Lock()
+NOKIA_PROFILE_OVERRIDES = CONFIG_DIR / "nokia-profile-overrides.json"
+NOKIA_SYNC_SETTING_KEYS = {
+    "mcc", "mnc", "tac", "enb_id", "cell_id", "pci", "lte_band",
+    "dl_earfcn", "ul_earfcn", "channel_bandwidth_mhz", "tx_power_dbm",
+}
 
 GIALER_ATR = "3B9F95801FC78031A073B6A10067CF3215CA9CD70920"
 SIM_CARD_PROFILES = {
@@ -97,6 +102,12 @@ def settings():
             defaults.update(json.loads(path.read_text()))
         except (OSError, json.JSONDecodeError):
             pass
+    if NOKIA_PROFILE_OVERRIDES.exists():
+        try:
+            overrides = json.loads(NOKIA_PROFILE_OVERRIDES.read_text())
+            defaults.update({key: value for key, value in overrides.items() if key in NOKIA_SYNC_SETTING_KEYS})
+        except (OSError, json.JSONDecodeError, AttributeError):
+            pass
     return defaults
 
 
@@ -114,6 +125,76 @@ LTE_FDD_BANDS = {
     25: (1930.0, 8040, 1850.0, 26040), 26: (859.0, 8690, 814.0, 26690),
     28: (758.0, 9210, 703.0, 27210),
 }
+LTE_FDD_EARFCN_RANGES = {
+    1: (0, 599), 2: (600, 1199), 3: (1200, 1949), 4: (1950, 2399), 5: (2400, 2649),
+    7: (2750, 3449), 8: (3450, 3799), 12: (5010, 5179), 13: (5180, 5279),
+    14: (5280, 5379), 17: (5730, 5849), 20: (6150, 6449), 25: (8040, 8689),
+    26: (8690, 9039), 28: (9210, 9659),
+}
+
+NOKIA_SYNC_FIELDS = {
+    "mcc": {"label": "MCC", "kind": "digits", "minimum_length": 3, "maximum_length": 3},
+    "mnc": {"label": "MNC", "kind": "digits", "minimum_length": 2, "maximum_length": 3},
+    "tac": {"label": "Tracking area", "kind": "integer", "minimum": 0, "maximum": 65535},
+    "enb_id": {"label": "eNodeB ID", "kind": "integer", "minimum": 0, "maximum": 1048575},
+    "cell_id": {"label": "Cell ID", "kind": "integer", "minimum": 0, "maximum": 268435455},
+    "pci": {"label": "Physical cell ID", "kind": "integer", "minimum": 0, "maximum": 503},
+    "lte_band": {"label": "LTE band", "kind": "integer", "minimum": 1, "maximum": 88},
+    "dl_earfcn": {"label": "DL EARFCN", "kind": "integer", "minimum": 0, "maximum": 262143},
+    "ul_earfcn": {"label": "UL EARFCN", "kind": "integer", "minimum": 0, "maximum": 262143},
+    "channel_bandwidth_mhz": {"label": "Channel bandwidth", "kind": "choice", "choices": [5, 10, 15, 20]},
+    "tx_power_dbm": {"label": "Transmit power", "kind": "integer", "minimum": -50, "maximum": 50},
+}
+
+
+def validate_nokia_configuration(values, require_all=True):
+    if not isinstance(values, dict):
+        raise ValueError("Nokia configuration must be an object")
+    clean, errors = {}, {}
+    for key, spec in NOKIA_SYNC_FIELDS.items():
+        if key not in values or str(values[key]).strip() == "":
+            if require_all:
+                errors[key] = "Required"
+            continue
+        raw = str(values[key]).strip()
+        if spec["kind"] == "digits":
+            if not raw.isdigit() or not spec["minimum_length"] <= len(raw) <= spec["maximum_length"]:
+                errors[key] = f"Use {spec['minimum_length']}–{spec['maximum_length']} digits"
+            else:
+                clean[key] = raw
+            continue
+        try:
+            number = int(raw)
+        except (TypeError, ValueError):
+            errors[key] = "Use a whole number"
+            continue
+        if spec["kind"] == "choice" and number not in spec["choices"]:
+            errors[key] = f"Choose one of {', '.join(map(str, spec['choices']))}"
+        elif spec["kind"] == "integer" and not spec["minimum"] <= number <= spec["maximum"]:
+            errors[key] = f"Must be {spec['minimum']}–{spec['maximum']}"
+        else:
+            clean[key] = number
+    if not errors and all(key in clean for key in ("lte_band", "dl_earfcn", "ul_earfcn")):
+        mapping = LTE_FDD_BANDS.get(clean["lte_band"])
+        if mapping:
+            dl_range = LTE_FDD_EARFCN_RANGES[clean["lte_band"]]
+            if not dl_range[0] <= clean["dl_earfcn"] <= dl_range[1]:
+                errors["dl_earfcn"] = f"Band {clean['lte_band']} DL EARFCN must be {dl_range[0]}–{dl_range[1]}"
+            expected_delta = mapping[3] - mapping[1]
+            if clean["ul_earfcn"] - clean["dl_earfcn"] != expected_delta:
+                errors["ul_earfcn"] = f"Band {clean['lte_band']} requires UL EARFCN = DL EARFCN + {expected_delta}"
+    return clean, errors
+
+
+def save_nokia_profile_overrides(values):
+    clean, errors = validate_nokia_configuration(values)
+    if errors:
+        raise ValueError("; ".join(f"{NOKIA_SYNC_FIELDS[key]['label']}: {message}" for key, message in errors.items()))
+    temporary = NOKIA_PROFILE_OVERRIDES.with_suffix(".tmp")
+    temporary.write_text(json.dumps(clean, indent=2) + "\n")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, NOKIA_PROFILE_OVERRIDES)
+    return clean
 
 
 def radio_channel_profile(cfg=None):
@@ -535,8 +616,14 @@ def nokia_operational_feed():
         "gpslock": "GPS lock", "gnssstatus": "GNSS status", "syncstatus": "Synchronization",
         "s1state": "S1 state", "mmeconnection": "MME connection", "activeues": "Active UEs",
         "temperature": "Temperature", "vswr": "VSWR", "txpower": "Transmit power",
-        "dlearfcn": "DL EARFCN", "ulearfcn": "UL EARFCN", "pci": "PCI", "band": "LTE band",
-        "bandwidth": "Bandwidth", "softwareversion": "Software version", "swversion": "Software version",
+        "dlearfcn": "DL EARFCN", "earfcndl": "DL EARFCN",
+        "ulearfcn": "UL EARFCN", "earfcnul": "UL EARFCN",
+        "pci": "PCI", "phycellid": "PCI", "band": "LTE band", "lteradiofrequencyband": "LTE band",
+        "mcc": "MCC", "mobilecountrycode": "MCC", "mnc": "MNC", "mobilenetworkcode": "MNC",
+        "tac": "Tracking area", "trackingareacode": "Tracking area",
+        "enbid": "eNodeB ID", "enodebid": "eNodeB ID", "cellid": "Cell ID",
+        "bandwidth": "Bandwidth", "dlchbw": "Bandwidth",
+        "softwareversion": "Software version", "swversion": "Software version",
     }
     statuses = {}
     for record in records_by_kind["status"] + records_by_kind["cells"]:
@@ -562,6 +649,81 @@ def nokia_operational_feed():
             "configured_endpoints": sum(bool(item.get("configured")) for item in endpoint_results.values())}}
 
 
+NOKIA_LIVE_LABELS = {
+    "mcc": "MCC", "mnc": "MNC", "tac": "Tracking area", "enb_id": "eNodeB ID",
+    "cell_id": "Cell ID", "pci": "PCI", "lte_band": "LTE band", "dl_earfcn": "DL EARFCN",
+    "ul_earfcn": "UL EARFCN", "channel_bandwidth_mhz": "Bandwidth", "tx_power_dbm": "Transmit power",
+}
+
+
+def _parse_nokia_live_value(key, value):
+    text = str(value).strip()
+    if key in {"mcc", "mnc"}:
+        match = re.search(r"\d+", text)
+        if not match:
+            return None
+        digits = match.group(0)
+        return digits.zfill(3 if key == "mcc" else 2)
+    match = re.search(r"-?\d+", text)
+    return int(match.group(0)) if match else None
+
+
+def nokia_configuration_snapshot(feed=None):
+    feed = feed or nokia_operational_feed()
+    live_by_label = {item["label"]: item["value"] for item in feed.get("statuses", [])}
+    live = {key: _parse_nokia_live_value(key, live_by_label[label])
+            for key, label in NOKIA_LIVE_LABELS.items() if label in live_by_label}
+    live = {key: value for key, value in live.items() if value is not None}
+    cfg = settings()
+    app_values = {key: cfg.get(key) for key in NOKIA_SYNC_FIELDS}
+    _, app_errors = validate_nokia_configuration(app_values)
+    _, live_errors = validate_nokia_configuration(live, require_all=False)
+    comparisons = []
+    for key, spec in NOKIA_SYNC_FIELDS.items():
+        app_value, nokia_value = app_values[key], live.get(key)
+        if key in app_errors:
+            state, detail = "invalid", app_errors[key]
+        elif key in live_errors:
+            state, detail = "invalid", live_errors[key]
+        elif nokia_value is None:
+            state, detail = "unavailable", "Nokia did not report this field"
+        elif str(app_value) == str(nokia_value):
+            state, detail = "match", "App and Nokia agree"
+        else:
+            state, detail = "mismatch", "Review before synchronizing"
+        comparisons.append({"key": key, "label": spec["label"], "app": app_value,
+                            "nokia": nokia_value, "state": state, "detail": detail})
+    compared = [item for item in comparisons if item["state"] != "unavailable"]
+    return {"sampled_at": feed.get("sampled_at", int(time.time())), "app": app_values, "nokia": live,
+            "fields": NOKIA_SYNC_FIELDS, "field_order": list(NOKIA_SYNC_FIELDS), "comparisons": comparisons,
+            "valid": not app_errors and not live_errors,
+            "matched": bool(compared) and all(item["state"] == "match" for item in compared),
+            "reported_fields": len(live), "app_errors": app_errors, "nokia_errors": live_errors,
+            "gateway_ready": nokia_control_status()["ready"]}
+
+
+def apply_nokia_configuration(values):
+    clean, errors = validate_nokia_configuration(values)
+    if errors:
+        raise ValueError("; ".join(f"{NOKIA_SYNC_FIELDS[key]['label']}: {message}" for key, message in errors.items()))
+    status = nokia_control_status()
+    if not status["ready"]:
+        raise ValueError(status["detail"])
+    cfg = settings()
+    result, body = _nokia_api_request(cfg["nokia_api_control_path"], method="POST",
+                                      json_body={"action": "apply_configuration", "values": clean,
+                                                 "enb_id": int(cfg["enb_id"]), "cell_id": int(cfg["cell_id"])})
+    if not result.get("authenticated"):
+        raise ValueError(result.get("detail") or "Nokia control gateway did not accept the configuration")
+    response = None
+    if body:
+        try:
+            response = json.loads(body.decode("utf-8", errors="replace"))
+        except json.JSONDecodeError:
+            response = {"detail": body.decode("utf-8", errors="replace")[:500]}
+    return {"ok": True, "values": clean, "gateway": result, "response": response}
+
+
 NOKIA_CONTROL_ACTIONS = {
     "cell_lock": {"label": "Lock cell", "detail": "Administratively stop new radio service for the configured cell."},
     "cell_unlock": {"label": "Unlock cell", "detail": "Return the configured cell to authorized service."},
@@ -573,12 +735,13 @@ NOKIA_CONTROL_ACTIONS = {
 
 def nokia_control_status():
     cfg = settings()
-    path = str(cfg["nokia_api_control_path"]).strip()
-    return {"enabled": bool(cfg["nokia_control_enabled"]),
-            "gateway_enabled": bool(cfg["nokia_api_enabled"]), "configured": bool(path),
-            "ready": bool(cfg["nokia_control_enabled"] and cfg["nokia_api_enabled"] and path),
+    path = str(cfg.get("nokia_api_control_path", "")).strip()
+    control_enabled, api_enabled = bool(cfg.get("nokia_control_enabled")), bool(cfg.get("nokia_api_enabled"))
+    return {"enabled": control_enabled,
+            "gateway_enabled": api_enabled, "configured": bool(path),
+            "ready": bool(control_enabled and api_enabled and path),
             "actions": [{"id": action, **details} for action, details in NOKIA_CONTROL_ACTIONS.items()],
-            "detail": "Control gateway ready" if cfg["nokia_control_enabled"] and cfg["nokia_api_enabled"] and path else
+            "detail": "Control gateway ready" if control_enabled and api_enabled and path else
                       "Enable Nokia API and control, then configure the licensed HTTPS control-gateway path in Home Assistant."}
 
 
@@ -1906,6 +2069,7 @@ def nokia_api_status_api():
 @app.get("/api/nokia/operations")
 def nokia_operations_api():
     result = nokia_operational_feed()
+    result["configuration"] = nokia_configuration_snapshot(result)
     event("bts", f"Polled Nokia operational feed: {result['summary']['status_fields']} status fields, {result['summary']['messages']} messages")
     return jsonify(result)
 
@@ -1929,6 +2093,51 @@ def nokia_control_api():
         return jsonify(result)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/api/nokia/configuration", methods=["GET", "POST"])
+def nokia_configuration_api():
+    if request.method == "GET":
+        return jsonify(nokia_configuration_snapshot())
+    body = request.get_json(silent=True) or {}
+    action = str(body.get("action", "validate"))
+    values = body.get("values", {})
+    try:
+        if action == "validate":
+            clean, errors = validate_nokia_configuration(values)
+            return jsonify({"ok": not errors, "values": clean, "errors": errors})
+        if action == "save_app":
+            if body.get("confirm") != "SAVE APP":
+                raise ValueError("Type SAVE APP to store this reviewed radio profile")
+            clean = save_nokia_profile_overrides(values)
+            event("bts", "Saved reviewed Nokia radio values as the Baiamonte LTE target profile")
+            return jsonify({"ok": True, "values": clean,
+                            "message": "App profile saved; validate against a fresh Nokia readback"})
+        if action == "reset_app":
+            if body.get("confirm") != "RESET APP":
+                raise ValueError("Type RESET APP to remove synchronized overrides")
+            NOKIA_PROFILE_OVERRIDES.unlink(missing_ok=True)
+            event("bts", "Removed synchronized Nokia overrides and restored Home Assistant option values")
+            return jsonify({"ok": True, "message": "Home Assistant configuration values restored"})
+        if action == "import_nokia":
+            if body.get("confirm") != "IMPORT NOKIA":
+                raise ValueError("Type IMPORT NOKIA to copy reported radio values into the app profile")
+            snapshot = nokia_configuration_snapshot()
+            if not snapshot["nokia"]:
+                raise ValueError("The Nokia did not report any recognized configuration values")
+            clean = save_nokia_profile_overrides({**snapshot["app"], **snapshot["nokia"]})
+            event("bts", f"Imported {snapshot['reported_fields']} reported Nokia values into the app profile")
+            return jsonify({"ok": True, "values": clean, "reported_fields": snapshot["reported_fields"],
+                            "message": "Reported Nokia values imported; refresh to compare all fields"})
+        if action == "apply_nokia":
+            if body.get("confirm") != "APPLY NOKIA":
+                raise ValueError("Type APPLY NOKIA to send this reviewed profile to the licensed gateway")
+            result = apply_nokia_configuration(values)
+            event("bts", "Sent a validated radio configuration profile to the licensed Nokia gateway")
+            return jsonify({**result, "message": "Gateway accepted the profile; poll Nokia to verify readback"})
+        raise ValueError("Unsupported Nokia configuration action")
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
 
 
 @app.get("/api/network-profile")

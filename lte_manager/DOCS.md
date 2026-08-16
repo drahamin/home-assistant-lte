@@ -25,6 +25,8 @@ For live Nokia data, enable `nokia_api_enabled` and configure the HTTPS base URL
 
 Common controls use a separate opt-in. Set `nokia_control_enabled` and `nokia_api_control_path` only when a licensed local adapter implements the Baiamonte POST contract. The fixed actions are cell lock, cell unlock, synchronization refresh, alarm acknowledgement, and cell restart. Each request includes only its allowlisted action plus the configured eNodeB and cell IDs, requires the exact confirmation phrase, and is logged. The app does not guess or call undocumented Nokia control paths.
 
+The **Two-way radio profile** compares live Nokia values with the app target for MCC, MNC, TAC, eNodeB ID, cell ID, PCI, band, DL/UL EARFCN, bandwidth, and transmit power. **Use Nokia values in app** stores recognized readback values in the private app configuration directory. Those synchronized values take precedence over the matching Home Assistant options until **Restore HA configuration** removes the overrides. **Apply profile to Nokia** sends an `apply_configuration` action and the validated allowlisted values to the configured licensed control gateway. A successful gateway response means accepted, not verified; use **Read Nokia** afterward and require every reported comparison to match before considering the change applied.
+
 Radio Operations includes shortcuts to open or copy the Nokia HTTPS management address, inspect the Home Assistant app container's route to the radio, and download the current safe diagnostic snapshot. These tools do not enable RF, change the commissioning profile, bypass the Nokia login, or accept arbitrary network commands.
 
 In Site Manager, verify:
