@@ -1,4 +1,5 @@
 import base64
+import copy
 import csv
 import hashlib
 import io
@@ -21,6 +22,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -44,6 +46,17 @@ _MAINTENANCE_LOCK = threading.Lock()
 _LAST_MAINTENANCE = 0
 _LOG_LOCK = threading.Lock()
 _SIM_PROGRAM_LOCK = threading.Lock()
+_SETTINGS_LOCK = threading.Lock()
+_SETTINGS_CACHE_KEY = None
+_SETTINGS_CACHE_VALUE = None
+_NETWORK_STATUS_LOCK = threading.Lock()
+_NETWORK_STATUS_CACHE = None
+_NETWORK_VISIBILITY_LOCK = threading.Lock()
+_NETWORK_VISIBILITY_CACHE = None
+_NOKIA_GET_CACHE_LOCK = threading.Lock()
+_NOKIA_GET_CACHE = {}
+_MONITOR_THREAD_LOCK = threading.Lock()
+_MONITOR_THREAD = None
 NOKIA_PROFILE_OVERRIDES = CONFIG_DIR / "nokia-profile-overrides.json"
 NOKIA_SYNC_SETTING_KEYS = {
     "mcc", "mnc", "tac", "enb_id", "cell_id", "pci", "lte_band",
@@ -67,8 +80,7 @@ def sim_card_profile(atr):
     return dict(profile) if profile else None
 
 
-def settings():
-    defaults = {
+DEFAULT_SETTINGS = {
         "epc_host": "192.0.2.151", "bts_host": "192.0.2.100",
         "nokia_api_enabled": False, "nokia_api_base_url": "https://192.0.2.100",
         "nokia_api_status_path": "/", "nokia_api_cells_path": "", "nokia_api_alarms_path": "",
@@ -95,8 +107,26 @@ def settings():
         "traffic_monitor_interval_seconds": 300,
         "communications_gateway_url": "", "communications_gateway_token": "",
         "sip_gateway_host": "", "sip_gateway_port": 5060, "sip_transport": "tcp",
-    }
+}
+
+
+def _file_revision(path):
+    try:
+        stat = path.stat()
+        return stat.st_mtime_ns, stat.st_size
+    except OSError:
+        return None
+
+
+def settings():
+    global _SETTINGS_CACHE_KEY, _SETTINGS_CACHE_VALUE
     path = Path(os.getenv("OPTIONS_PATH", "/data/options.json"))
+    cache_key = (str(path), _file_revision(path), str(NOKIA_PROFILE_OVERRIDES),
+                 _file_revision(NOKIA_PROFILE_OVERRIDES))
+    with _SETTINGS_LOCK:
+        if cache_key == _SETTINGS_CACHE_KEY and _SETTINGS_CACHE_VALUE is not None:
+            return dict(_SETTINGS_CACHE_VALUE)
+    defaults = dict(DEFAULT_SETTINGS)
     if path.exists():
         try:
             defaults.update(json.loads(path.read_text()))
@@ -108,6 +138,8 @@ def settings():
             defaults.update({key: value for key, value in overrides.items() if key in NOKIA_SYNC_SETTING_KEYS})
         except (OSError, json.JSONDecodeError, AttributeError):
             pass
+    with _SETTINGS_LOCK:
+        _SETTINGS_CACHE_KEY, _SETTINGS_CACHE_VALUE = cache_key, dict(defaults)
     return defaults
 
 
@@ -515,6 +547,29 @@ def tls_status(host, port=443):
                 "certificate_sha256": None}
 
 
+def _nokia_get_cache_key(cfg, base, path):
+    credential_hash = hashlib.sha256(
+        f"{cfg.get('nokia_api_username', '')}:{cfg.get('nokia_api_password', '')}".encode()
+    ).digest()
+    return base, path, bool(cfg.get("nokia_api_tls_verify")), credential_hash
+
+
+def _cached_nokia_get(key, max_age=5):
+    with _NOKIA_GET_CACHE_LOCK:
+        cached = _NOKIA_GET_CACHE.get(key)
+        if not cached or time.monotonic() - cached[0] > max_age:
+            return None
+        return dict(cached[1]), cached[2]
+
+
+def _store_nokia_get(key, result, body):
+    with _NOKIA_GET_CACHE_LOCK:
+        _NOKIA_GET_CACHE[key] = (time.monotonic(), dict(result), body)
+        if len(_NOKIA_GET_CACHE) > 16:
+            oldest = min(_NOKIA_GET_CACHE, key=lambda item: _NOKIA_GET_CACHE[item][0])
+            _NOKIA_GET_CACHE.pop(oldest, None)
+
+
 def _nokia_api_request(path, method="GET", json_body=None):
     cfg = settings()
     if not cfg["nokia_api_enabled"]:
@@ -535,6 +590,14 @@ def _nokia_api_request(path, method="GET", json_body=None):
     if method not in {"GET", "POST"}:
         return {"enabled": True, "configured": True, "reachable": False, "authenticated": False,
                 "detail": "Unsupported Nokia gateway method"}, b""
+    cache_key = _nokia_get_cache_key(cfg, base, path)
+    if method == "GET":
+        cached = _cached_nokia_get(cache_key)
+        if cached is not None:
+            return cached
+    else:
+        with _NOKIA_GET_CACHE_LOCK:
+            _NOKIA_GET_CACHE.clear()
     encoded_body = json.dumps(json_body).encode() if json_body is not None else None
     headers = {"Accept": "application/json, application/xml, text/plain"}
     if encoded_body is not None:
@@ -551,22 +614,31 @@ def _nokia_api_request(path, method="GET", json_body=None):
             content_type = response.headers.get_content_type()
             body = response.read(1_000_001)
             if len(body) > 1_000_000:
-                return {"enabled": True, "configured": True, "reachable": True, "authenticated": True,
-                        "status": response.status, "content_type": content_type, "latency_ms": None,
-                        "detail": "Nokia response exceeded the 1 MB safety limit"}, b""
-            return {"enabled": True, "configured": True, "reachable": True, "authenticated": True,
-                    "status": response.status, "content_type": content_type,
-                    "latency_ms": round((time.monotonic() - started) * 1000),
-                    "detail": "Configured Nokia endpoint responded successfully"}, body
+                result = {"enabled": True, "configured": True, "reachable": True, "authenticated": True,
+                          "status": response.status, "content_type": content_type, "latency_ms": None,
+                          "detail": "Nokia response exceeded the 1 MB safety limit"}
+                _store_nokia_get(cache_key, result, b"")
+                return result, b""
+            result = {"enabled": True, "configured": True, "reachable": True, "authenticated": True,
+                      "status": response.status, "content_type": content_type,
+                      "latency_ms": round((time.monotonic() - started) * 1000),
+                      "detail": "Configured Nokia endpoint responded successfully"}
+            _store_nokia_get(cache_key, result, body)
+            return result, body
     except urllib.error.HTTPError as exc:
-        return {"enabled": True, "configured": True, "reachable": True, "authenticated": exc.code not in {401, 403},
-                "status": exc.code, "content_type": None,
-                "latency_ms": round((time.monotonic() - started) * 1000),
-                "detail": "Nokia endpoint rejected the configured credentials" if exc.code in {401, 403} else f"Nokia endpoint returned HTTP {exc.code}"}, b""
+        result = {"enabled": True, "configured": True, "reachable": True,
+                  "authenticated": exc.code not in {401, 403}, "status": exc.code, "content_type": None,
+                  "latency_ms": round((time.monotonic() - started) * 1000),
+                  "detail": "Nokia endpoint rejected the configured credentials" if exc.code in {401, 403}
+                  else f"Nokia endpoint returned HTTP {exc.code}"}
+        _store_nokia_get(cache_key, result, b"")
+        return result, b""
     except (urllib.error.URLError, OSError, ssl.SSLError) as exc:
-        return {"enabled": True, "configured": True, "reachable": False, "authenticated": False,
-                "status": None, "content_type": None, "latency_ms": None,
-                "detail": f"Nokia endpoint unavailable: {str(exc.reason if isinstance(exc, urllib.error.URLError) else exc)[:180]}"}, b""
+        result = {"enabled": True, "configured": True, "reachable": False, "authenticated": False,
+                  "status": None, "content_type": None, "latency_ms": None,
+                  "detail": f"Nokia endpoint unavailable: {str(exc.reason if isinstance(exc, urllib.error.URLError) else exc)[:180]}"}
+        _store_nokia_get(cache_key, result, b"")
+        return result, b""
 
 
 def nokia_api_connectivity():
@@ -959,12 +1031,20 @@ def process_alert_state(status):
 
 
 def sample_network(process_alerts=False):
+    global _NETWORK_STATUS_CACHE
     cfg = settings()
-    status = {"epc": {"host": cfg["epc_host"], "online": ping_check(cfg["epc_host"]),
-                      "s1": sctp_check(cfg["epc_host"], int(cfg.get("s1ap_port", 36412))),
-                      "database": tcp_check(cfg["epc_host"], 27017)},
-              "bts": {"host": cfg["bts_host"], "online": ping_check(cfg["bts_host"]), "software": "FLF21"}}
+    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="lte-status") as executor:
+        epc_ping = executor.submit(ping_check, cfg["epc_host"])
+        s1 = executor.submit(sctp_check, cfg["epc_host"], int(cfg.get("s1ap_port", 36412)))
+        database = executor.submit(tcp_check, cfg["epc_host"], 27017)
+        bts_ping = executor.submit(ping_check, cfg["bts_host"])
+    status = {"epc": {"host": cfg["epc_host"], "online": epc_ping.result(),
+                      "s1": s1.result(), "database": database.result()},
+              "bts": {"host": cfg["bts_host"], "online": bts_ping.result(), "software": "FLF21"}}
     sampled_at = int(time.time())
+    status["sampled_at"] = sampled_at
+    with _NETWORK_STATUS_LOCK:
+        _NETWORK_STATUS_CACHE = (time.monotonic(), copy.deepcopy(status))
     with db() as conn:
         conn.execute("INSERT OR REPLACE INTO status_history(sampled_at,epc_online,bts_online,s1_online,db_online) VALUES(?,?,?,?,?)",
             (sampled_at, int(status["epc"]["online"]), int(status["bts"]["online"]),
@@ -973,6 +1053,17 @@ def sample_network(process_alerts=False):
     if process_alerts:
         process_alert_state(status)
     return status
+
+
+def current_network_status(max_age=None):
+    cfg = settings()
+    if max_age is None:
+        max_age = min(max(int(cfg.get("monitor_interval_seconds", 60)), 30), 900) + 5
+    with _NETWORK_STATUS_LOCK:
+        cached = _NETWORK_STATUS_CACHE
+        if cached and time.monotonic() - cached[0] <= max_age:
+            return copy.deepcopy(cached[1])
+    return sample_network()
 
 
 def prune_operational_data(force=False):
@@ -990,6 +1081,20 @@ def prune_operational_data(force=False):
             conn.execute("DELETE FROM traffic_history WHERE sampled_at < ?", (now - history_days * 86400,))
             conn.execute("DELETE FROM events WHERE created_at < ?", (now - event_days * 86400,))
             conn.execute("DELETE FROM sim_write_profiles WHERE updated_at < ?", (now - 30 * 86400,))
+        for pattern in ("lte-support-*.zip", "pysim-profile-*.txt"):
+            for path in DATA_DIR.glob(pattern):
+                try:
+                    if path.stat().st_mtime < now - 86400:
+                        path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        commissioning_files = sorted(CONFIG_DIR.glob("commissioning-*"),
+                                     key=lambda path: path.stat().st_mtime, reverse=True)
+        for path in commissioning_files[3:]:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
         _LAST_MAINTENANCE = now
         return True
 
@@ -1079,17 +1184,28 @@ def connection_incidents(hours=168, limit=40):
     return list(reversed(incidents[-limit:]))
 
 
-def network_visibility(status=None):
+def network_visibility(status=None, prefer_cache=False):
+    global _NETWORK_VISIBILITY_CACHE
     cfg = settings()
-    status = status or sample_network()
-    dns = dns_check()
-    internet = tcp_check("1.1.1.1", 443, timeout=1.5)
-    bts_https = tcp_check(cfg["bts_host"], 443)
-    bts_http = tcp_check(cfg["bts_host"], 80)
-    ssh = tcp_check(cfg["epc_host"], int(cfg.get("epc_ssh_port", 22)))
+    if prefer_cache:
+        max_age = min(max(int(cfg.get("monitor_interval_seconds", 60)), 30), 900) + 5
+        with _NETWORK_VISIBILITY_LOCK:
+            cached = _NETWORK_VISIBILITY_CACHE
+            if cached and time.monotonic() - cached[0] <= max_age:
+                return copy.deepcopy(cached[1])
+    status = status or current_network_status()
+    with ThreadPoolExecutor(max_workers=6, thread_name_prefix="lte-visibility") as executor:
+        dns_future = executor.submit(dns_check)
+        internet_future = executor.submit(tcp_check, "1.1.1.1", 443, 1.5)
+        bts_https_future = executor.submit(tcp_check, cfg["bts_host"], 443)
+        bts_http_future = executor.submit(tcp_check, cfg["bts_host"], 80)
+        ssh_future = executor.submit(tcp_check, cfg["epc_host"], int(cfg.get("epc_ssh_port", 22)))
+        communications_future = executor.submit(communications_status)
+    dns, internet = dns_future.result(), internet_future.result()
+    bts_https, bts_http = bts_https_future.result(), bts_http_future.result()
+    ssh, communications = ssh_future.result(), communications_future.result()
     route_status = app_setting_json("routing_last_status")
     route_verified = app_setting_json("routing_last_verified")
-    communications = communications_status()
     with db() as conn:
         latest = conn.execute("SELECT MAX(sampled_at) AS sampled_at FROM status_history").fetchone()["sampled_at"]
         alert_rows = conn.execute("SELECT target,failures,active,last_notified FROM alert_state").fetchall()
@@ -1144,13 +1260,16 @@ def network_visibility(status=None):
                         "detail": f"{counts['unassigned']} device(s) need a vineyard zone"})
     alerts = {row["target"]: {"failures": row["failures"], "active": bool(row["active"]),
                               "last_notified": row["last_notified"]} for row in alert_rows}
-    return {"sampled_at": int(time.time()), "monitor_sampled_at": latest, "health_score": score,
-            "lights": lights, "actions": actions[:8], "routing": route_status, "ue_verification": route_verified,
-            "alerts": alerts, "incidents": connection_incidents(168, 12),
-            "communications": communications,
-            "inventory": {"total": counts["total"] or 0, "critical": counts["critical"] or 0,
-                          "unassigned": counts["unassigned"] or 0},
-            "home_assistant_ready": bool(os.getenv("SUPERVISOR_TOKEN"))}
+    result = {"sampled_at": int(time.time()), "monitor_sampled_at": latest, "health_score": score,
+              "lights": lights, "actions": actions[:8], "routing": route_status,
+              "ue_verification": route_verified, "alerts": alerts,
+              "incidents": connection_incidents(168, 12), "communications": communications,
+              "inventory": {"total": counts["total"] or 0, "critical": counts["critical"] or 0,
+                            "unassigned": counts["unassigned"] or 0},
+              "home_assistant_ready": bool(os.getenv("SUPERVISOR_TOKEN"))}
+    with _NETWORK_VISIBILITY_LOCK:
+        _NETWORK_VISIBILITY_CACHE = (time.monotonic(), copy.deepcopy(result))
+    return result
 
 
 def subscriber_gauges(status, route_status, subscriber_rows):
@@ -1967,8 +2086,9 @@ def index():
 @app.get("/api/overview")
 def overview():
     cfg = settings()
-    status = sample_network()
-    visibility = network_visibility(status)
+    live = request.args.get("live") == "1"
+    status = sample_network() if live else current_network_status()
+    visibility = network_visibility(status, prefer_cache=not live)
     with db() as conn:
         ue_count = conn.execute("SELECT COUNT(*) FROM subscribers").fetchone()[0]
         events = [dict(row) for row in conn.execute("SELECT * FROM events ORDER BY id DESC LIMIT 8")]
@@ -2258,6 +2378,24 @@ def export_subscriber_inventory():
                                        "X-Content-Type-Options": "nosniff"})
 
 
+def downsample_status_history(rows, max_points=720):
+    if len(rows) <= max_points:
+        return rows
+    state_keys = ("epc_online", "bts_online", "s1_online", "db_online")
+    important = {0, len(rows) - 1}
+    for index in range(1, len(rows)):
+        if any(rows[index][key] != rows[index - 1][key] for key in state_keys):
+            important.update((index - 1, index))
+    if len(important) < max_points:
+        slots = max_points - len(important)
+        important.update(round(index * (len(rows) - 1) / max(slots - 1, 1)) for index in range(slots))
+    selected = sorted(important)
+    if len(selected) > max_points:
+        selected = [selected[round(index * (len(selected) - 1) / (max_points - 1))]
+                    for index in range(max_points)]
+    return [rows[index] for index in dict.fromkeys(selected)]
+
+
 @app.get("/api/history")
 def connection_history():
     hours = min(max(request.args.get("hours", 24, type=int), 1), 720)
@@ -2268,7 +2406,9 @@ def connection_history():
     total = len(rows)
     uptime = {key: round(100 * sum(row[key] for row in rows) / total, 1) if total else None
               for key in ("epc_online", "bts_online")}
-    return jsonify({"hours": hours, "points": rows, "uptime": {"epc": uptime["epc_online"], "radio": uptime["bts_online"]}})
+    points = downsample_status_history(rows)
+    return jsonify({"hours": hours, "points": points, "samples": total, "returned_points": len(points),
+                    "uptime": {"epc": uptime["epc_online"], "radio": uptime["bts_online"]}})
 
 
 @app.get("/api/traffic/history")
@@ -2392,8 +2532,15 @@ def upload_commissioning():
         return jsonify({"error": "Choose a commissioning file"}), 400
     safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", Path(upload.filename).name)
     target = CONFIG_DIR / f"commissioning-{safe_name}"
-    upload.save(target)
+    content = upload.stream.read(4_000_001)
+    if len(content) > 4_000_000:
+        return jsonify({"error": "Commissioning file must be 4 MB or smaller"}), 413
+    target.write_bytes(content)
     os.chmod(target, 0o600)
+    commissioning_files = sorted(CONFIG_DIR.glob("commissioning-*"),
+                                 key=lambda path: path.stat().st_mtime, reverse=True)
+    for old_path in commissioning_files[3:]:
+        old_path.unlink(missing_ok=True)
     event("bts", f"Stored Nokia commissioning file {safe_name}; apply it with licensed BTS Site Manager")
     return jsonify({"ok": True, "name": safe_name, "size": target.stat().st_size})
 
@@ -2933,17 +3080,18 @@ def support_bundle():
     cfg = settings()
     safe_cfg = {key: value for key, value in cfg.items() if key not in SECRET_SETTING_KEYS}
     created = int(time.time())
-    path = DATA_DIR / f"lte-support-{created}.zip"
     with db() as conn:
         recent = [dict(row) for row in conn.execute("SELECT kind,message,created_at FROM events ORDER BY id DESC LIMIT 250")]
     report = {"created_at": created, "configuration": safe_cfg, "diagnostics": diagnostic_checks(), "events": recent,
               "privacy": "MongoDB URI, communications token, subscriber keys, OPc values, and commissioning XML are excluded."}
-    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("diagnostics.json", json.dumps(report, indent=2))
         archive.writestr("README.txt", "Redacted Baiamonte LTE support bundle. Subscriber secrets and Nokia commissioning data are not included.\n")
-    os.chmod(path, 0o600)
+    output.seek(0)
     event("diagnostic", "Generated redacted support bundle")
-    return send_file(path, as_attachment=True, download_name=path.name)
+    return send_file(output, as_attachment=True, download_name=f"lte-support-{created}.zip",
+                     mimetype="application/zip", max_age=0)
 
 
 @app.post("/api/sim/script")
@@ -2987,12 +3135,11 @@ def sim_script():
         f"Subscriber policy: {cfg['subscriber_ip_version']} · MTU {cfg['subscriber_mtu']} · QCI {cfg['default_qci']} · AMBR {cfg['ambr_downlink_mbps']}/{cfg['ambr_uplink_mbps']} Mbps DL/UL",
         "Use Program SIM + EPC only with the correct card model and vendor ADM credential; review model-dependent policy files after base programming.",
     ])
-    fd, path = tempfile.mkstemp(prefix="pysim-profile-", suffix=".txt", dir=DATA_DIR)
-    with os.fdopen(fd, "w") as handle: handle.write(script + "\n")
-    os.chmod(path, 0o600)
     update_sim_inventory(sub, "profile_ready", iccid)
     event("sim", f"Prepared private production worksheet for UE {sub['imsi']}")
-    return send_file(path, as_attachment=True, download_name=f"pysim-{sub['imsi']}.txt")
+    return app.response_class(script + "\n", mimetype="text/plain",
+                              headers={"Content-Disposition": f"attachment; filename=pysim-{sub['imsi']}.txt",
+                                       "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
 
 @app.get("/health")
@@ -3003,6 +3150,50 @@ def health():
 @app.get("/api/system/resources")
 def system_resources():
     return jsonify(resource_status())
+
+
+def background_monitor_loop():
+    event("monitor", "Availability monitoring started")
+    failures = 0
+    last_traffic_sample = 0
+    while True:
+        started = time.monotonic()
+        try:
+            status = sample_network(process_alerts=True)
+            network_visibility(status)
+            if failures:
+                event("monitor", "Availability monitoring recovered")
+            failures = 0
+        except Exception as exc:
+            failures += 1
+            if failures == 1 or failures % 10 == 0:
+                event("monitor", f"Monitoring check failed ({failures} consecutive): {exc}")
+        cfg = settings()
+        now = time.time()
+        traffic_interval = min(max(int(cfg.get("traffic_monitor_interval_seconds", 300)), 60), 3600)
+        if (cfg.get("epc_routing_management_enabled") and EPC_SSH_KEY.exists() and
+                EPC_KNOWN_HOSTS.exists() and now - last_traffic_sample >= traffic_interval):
+            try:
+                routing_check()
+            except Exception:
+                pass
+            last_traffic_sample = now
+        interval = min(max(int(cfg.get("monitor_interval_seconds", 60)), 30), 900)
+        time.sleep(max(1, interval - (time.monotonic() - started)))
+
+
+def start_background_monitor():
+    global _MONITOR_THREAD
+    with _MONITOR_THREAD_LOCK:
+        if _MONITOR_THREAD and _MONITOR_THREAD.is_alive():
+            return _MONITOR_THREAD
+        _MONITOR_THREAD = threading.Thread(target=background_monitor_loop, name="lte-monitor", daemon=True)
+        _MONITOR_THREAD.start()
+        return _MONITOR_THREAD
+
+
+if os.getenv("ENABLE_BACKGROUND_MONITOR") == "1":
+    start_background_monitor()
 
 
 if __name__ == "__main__":

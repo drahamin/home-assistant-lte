@@ -6,7 +6,7 @@ import socket
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 class AppTests(unittest.TestCase):
@@ -783,6 +783,94 @@ class AppTests(unittest.TestCase):
         self.assertIn("memory_mb", data)
         self.assertIn(data["memory_scope"], {"container", "web process"})
         self.assertNotIn("mongodb_uri", data)
+
+    def test_settings_cache_reloads_only_when_source_changes(self):
+        options = Path(self.temp.name) / "cached-options.json"
+        original_path = os.environ.get("OPTIONS_PATH")
+        try:
+            os.environ["OPTIONS_PATH"] = str(options)
+            self.server._SETTINGS_CACHE_KEY = None
+            self.server._SETTINGS_CACHE_VALUE = None
+            options.write_text('{"tac": 2}', encoding="utf-8")
+            self.assertEqual(self.server.settings()["tac"], 2)
+            first_key = self.server._SETTINGS_CACHE_KEY
+            self.assertEqual(self.server.settings()["tac"], 2)
+            self.assertEqual(self.server._SETTINGS_CACHE_KEY, first_key)
+            options.write_text('{"tac": 123}', encoding="utf-8")
+            self.assertEqual(self.server.settings()["tac"], 123)
+            self.assertNotEqual(self.server._SETTINGS_CACHE_KEY, first_key)
+        finally:
+            if original_path is None:
+                os.environ.pop("OPTIONS_PATH", None)
+            else:
+                os.environ["OPTIONS_PATH"] = original_path
+            self.server._SETTINGS_CACHE_KEY = None
+            self.server._SETTINGS_CACHE_VALUE = None
+            options.unlink(missing_ok=True)
+
+    def test_cached_network_status_avoids_duplicate_probes(self):
+        status = {"sampled_at": 123, "epc": {"online": True}, "bts": {"online": True}}
+        try:
+            self.server._NETWORK_STATUS_CACHE = (self.server.time.monotonic(), status)
+            with patch.object(self.server, "sample_network") as sample:
+                returned = self.server.current_network_status(max_age=60)
+            sample.assert_not_called()
+            self.assertEqual(returned, status)
+            returned["epc"]["online"] = False
+            self.assertTrue(self.server._NETWORK_STATUS_CACHE[1]["epc"]["online"])
+        finally:
+            self.server._NETWORK_STATUS_CACHE = None
+
+    def test_connection_history_is_bounded_for_phone_charts(self):
+        rows = [{"sampled_at": index, "epc_online": int(index < 2500),
+                 "bts_online": 1, "s1_online": 1, "db_online": 1}
+                for index in range(5000)]
+        points = self.server.downsample_status_history(rows)
+        self.assertLessEqual(len(points), 720)
+        self.assertEqual(points[0]["sampled_at"], 0)
+        self.assertEqual(points[-1]["sampled_at"], 4999)
+        self.assertTrue(any(point["epc_online"] == 0 for point in points))
+
+    def test_nokia_gets_are_short_lived_cached(self):
+        original = self.server.settings
+        cfg = {"nokia_api_enabled": True, "nokia_api_base_url": "https://192.0.2.100",
+               "bts_host": "192.0.2.100", "nokia_api_username": "", "nokia_api_password": "",
+               "nokia_api_tls_verify": False}
+        response = MagicMock()
+        response.status = 200
+        response.headers.get_content_type.return_value = "application/json"
+        response.read.return_value = b'{"ok":true}'
+        response.__enter__.return_value = response
+        try:
+            self.server.settings = lambda: cfg
+            self.server._NOKIA_GET_CACHE.clear()
+            with patch.object(self.server.urllib.request, "urlopen", return_value=response) as urlopen:
+                first = self.server._nokia_api_request("/status")
+                second = self.server._nokia_api_request("/status")
+            self.assertEqual(first, second)
+            self.assertEqual(urlopen.call_count, 1)
+        finally:
+            self.server.settings = original
+            self.server._NOKIA_GET_CACHE.clear()
+
+    def test_generated_private_downloads_do_not_accumulate(self):
+        before_support = set(Path(self.temp.name).glob("lte-support-*.zip"))
+        with patch.object(self.server, "diagnostic_checks", return_value=[]):
+            response = self.client.get("/api/support-bundle")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/zip")
+        self.assertEqual(set(Path(self.temp.name).glob("lte-support-*.zip")), before_support)
+
+        imsi = "001010000000199"
+        body = {"name": "Worksheet test", "device_type": "Camera", "zone": "Cellar",
+                "imsi": imsi, "iccid": "8900101000000000199", "k": "A" * 32,
+                "opc": "B" * 32, "amf": "8000", "apn": "internet"}
+        worksheet = self.client.post("/api/sim/script", json=body)
+        self.assertEqual(worksheet.status_code, 200)
+        self.assertIn("no-store", worksheet.headers["Cache-Control"])
+        self.assertFalse(list(Path(self.temp.name).glob("pysim-profile-*.txt")))
+        with self.server.db() as conn:
+            conn.execute("DELETE FROM sim_inventory WHERE imsi=?", (imsi,))
 
     def test_operational_retention_prunes_old_rows(self):
         old = 1

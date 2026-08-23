@@ -103,7 +103,9 @@ The SIM workbench calculates Milenage OPc from K and OP using `OPc = AES-128(K, 
 
 ## Availability alerts
 
-The app samples EPC and radio reachability every minute and retains 30 days of connection history. On the Overview page, choose which offline conditions should notify Home Assistant, how many failed checks trigger an alert, and the minimum repeat interval. A recovery notification replaces the offline notification when service returns.
+The app samples EPC and radio reachability every minute from a lightweight background thread inside its single web worker and retains 30 days of connection history. Normal page loads reuse a fresh monitor sample; the Overview **Refresh** button explicitly runs live probes. Independent probes run concurrently so one unreachable device cannot serially consume every timeout. On the Overview page, choose which offline conditions should notify Home Assistant, how many failed checks trigger an alert, and the minimum repeat interval. A recovery notification replaces the offline notification when service returns.
+
+Connection-history charts return at most 720 representative points while uptime is calculated from every retained sample. Support bundles and private SIM worksheets are generated in memory and are not retained under `/data`. Commissioning uploads are limited to 4 MB and only the three newest files are retained in the app's private configuration storage.
 
 ## Network visibility and troubleshooting
 
