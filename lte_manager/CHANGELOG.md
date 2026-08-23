@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.8
+
+- Moved availability monitoring into the single Gunicorn worker as one supervised background thread, removing a duplicate Python process and its imported Flask/MongoDB runtime.
+- Added short-lived, thread-safe caches for Home Assistant options, the latest monitor sample, visibility results, and repeated Nokia status GETs.
+- Parallelized independent EPC, radio, management, DNS, and Internet probes so an unreachable host no longer serially consumes every timeout.
+- Reused fresh monitor results for normal page loads while keeping the Overview **Refresh** button as an explicit live check.
+- Limited connection-history chart payloads to 720 representative points while calculating uptime from every retained sample.
+- Generates support bundles and private SIM worksheets in memory so sensitive downloads no longer accumulate in app storage.
+- Limited commissioning uploads to 4 MB, retains only the three newest commissioning files, and prunes legacy generated artifacts.
+
 ## 0.6.7
 
 - Added a two-way Nokia radio-profile editor for MCC, MNC, TAC, eNodeB/cell identity, PCI, LTE band, DL/UL EARFCN, bandwidth, and transmit power.

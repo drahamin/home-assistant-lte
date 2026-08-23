@@ -60,10 +60,10 @@ function renderVisibility(data){
   $('#traffic-evidence').innerHTML=`<div><small>NAT PACKETS</small><b>${counters?.nat?.toLocaleString?.()??'—'}</b></div><div><small>OUTBOUND</small><b>${counters?.outbound?.toLocaleString?.()??'—'}</b></div><div><small>RETURN</small><b>${counters?.return?.toLocaleString?.()??'—'}</b></div><p>${data.ue_verification?.verified?'A live subscriber traffic test has passed.':counters?'Counters are from the last routing check; run a live UE test for end-to-end proof.':'Run Check current routing to collect EPC counters.'}</p>`;
 }
 
-async function refresh(){
+async function refresh(live=false){
   const button=$('#refresh');button.classList.add('loading');button.disabled=true;
   try{
-    const d=await jsonFetch('api/overview');
+    const d=await jsonFetch(`api/overview${live?'?live=1':''}`);
     badge($('#epc-badge'),d.epc.online);badge($('#bts-badge'),d.bts.online);
     renderVisibility(d.visibility);
     renderSubscriberGauges(d.subscriber_gauges);
@@ -140,7 +140,7 @@ async function loadHistory(hours=24){
     const data=await jsonFetch(`api/history?hours=${hours}`),width=720;
     $('#epc-uptime').textContent=data.uptime.epc===null?'No data':`${data.uptime.epc}%`;
     $('#radio-uptime').textContent=data.uptime.radio===null?'No data':`${data.uptime.radio}%`;
-    $('#history-samples').textContent=data.points.length?`${data.points.length} checks recorded`:'History begins after the first check';
+    $('#history-samples').textContent=data.samples?`${data.samples} checks recorded${data.returned_points<data.samples?` · ${data.returned_points} chart points`:''}`:'History begins after the first check';
     if(!data.points.length){$('#history-chart').innerHTML='<div class="empty chart-empty">Monitoring is starting. Availability will appear here automatically.</div>';return}
     const epc=historyPath(data.points,'epc_online',38,62,width),radio=historyPath(data.points,'bts_online',98,122,width);
     $('#history-chart').innerHTML=`<svg viewBox="0 0 ${width} 150" role="img" aria-label="Connection history"><line x1="16" y1="75" x2="704" y2="75" class="chart-divider"/><text x="16" y="20">EPC</text><text x="16" y="88">RADIO</text><path d="${epc}" class="chart-line epc-line"/><path d="${radio}" class="chart-line radio-line"/><text x="16" y="146">${hours===168?'7 days ago':hours+' hours ago'}</text><text x="704" y="146" text-anchor="end">Now</text></svg>`;
@@ -167,7 +167,7 @@ $('#alert-form').onsubmit=async event=>{event.preventDefault();const form=event.
 
 $$('.nav').forEach(button=>button.onclick=()=>showPage(button.dataset.page));$$('[data-go]').forEach(button=>button.onclick=()=>showPage(button.dataset.go));
 function showPage(id,updateHash=true){if(!document.getElementById(id))id='overview';$$('.nav').forEach(n=>n.classList.toggle('active',n.dataset.page===id));$$('.page').forEach(p=>p.classList.toggle('active',p.id===id));$('#page-title').textContent={overview:'Vineyard network',ues:'Estate devices',bts:'Estate radio',sim:'SIM workbench',diagnostics:'Network care'}[id];if(updateHash&&location.hash!==`#${id}`)history.replaceState(null,'',`#${id}`);if(id==='bts'){loadBtsStatus();loadNokiaOperations();loadNokiaControls();loadNetworkProfile()}if(id==='sim')readerStatus();if(id==='diagnostics'){loadLogs();loadInternetPlan();loadRoutingAssistant();loadCommunications();loadResources()}window.scrollTo({top:0,behavior:'smooth'})}
-$('#refresh').onclick=refresh;$('#add-ue').onclick=()=>{resetUeDialog();$('#ue-dialog').showModal()};
+$('#refresh').onclick=()=>refresh(true);$('#add-ue').onclick=()=>{resetUeDialog();$('#ue-dialog').showModal()};
 $$('[data-action]').forEach(button=>button.onclick=()=>{const action=button.dataset.action;if(action==='add-ue'){showPage('ues');$('#add-ue').click()}else if(action==='diagnostics'){showPage('diagnostics');$('#run-diagnostics').click()}else showPage(action)});
 $('#save-ue').onclick=async()=>{const body=Object.fromEntries(new FormData($('#ue-dialog form'))),pending=pendingApprovalImsi;try{if(pending){body.confirm=pending;await jsonFetch(`api/registrations/pending/${pending}/approve`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})}else await jsonFetch('api/subscribers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});$('#ue-dialog').close();resetUeDialog();toast(pending?'Subscriber approved and provisioned':'Estate device provisioned');refresh()}catch(e){$('#form-error').textContent=e.message}};
 function btsPollCard(label,state,detail,meta=''){return `<div class="bts-poll-card ${state}"><i></i><span><small>${escapeHtml(label)}</small><b>${state==='online'?'Ready':state==='offline'?'Unavailable':'Not measured'}</b><em>${escapeHtml(detail)}</em>${meta?`<code>${escapeHtml(meta)}</code>`:''}</span></div>`}
