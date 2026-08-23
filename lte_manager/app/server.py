@@ -53,6 +53,7 @@ _NETWORK_STATUS_LOCK = threading.Lock()
 _NETWORK_STATUS_CACHE = None
 _NETWORK_VISIBILITY_LOCK = threading.Lock()
 _NETWORK_VISIBILITY_CACHE = None
+_NETWORK_VISIBILITY_GENERATION = 0
 _NOKIA_GET_CACHE_LOCK = threading.Lock()
 _NOKIA_GET_CACHE = {}
 _MONITOR_THREAD_LOCK = threading.Lock()
@@ -380,6 +381,14 @@ def db():
         conn.close()
 
 
+def invalidate_network_visibility():
+    """Discard derived visibility whenever its persisted inputs change."""
+    global _NETWORK_VISIBILITY_CACHE, _NETWORK_VISIBILITY_GENERATION
+    with _NETWORK_VISIBILITY_LOCK:
+        _NETWORK_VISIBILITY_CACHE = None
+        _NETWORK_VISIBILITY_GENERATION += 1
+
+
 def event(kind, message):
     with db() as conn:
         conn.execute("INSERT INTO events(kind,message,created_at) VALUES(?,?,?)", (kind, message, int(time.time())))
@@ -390,6 +399,8 @@ def event(kind, message):
             APP_LOG.replace(rotated)
         with APP_LOG.open("a", encoding="utf-8") as handle:
             handle.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} [{kind.upper()}] {message}\n")
+    if kind in {"subscriber", "routing", "alert"}:
+        invalidate_network_visibility()
 
 
 def update_sim_inventory(sub, stage, iccid="", attach_confirmed=False, data_verified=False):
@@ -617,13 +628,15 @@ def _nokia_api_request(path, method="GET", json_body=None):
                 result = {"enabled": True, "configured": True, "reachable": True, "authenticated": True,
                           "status": response.status, "content_type": content_type, "latency_ms": None,
                           "detail": "Nokia response exceeded the 1 MB safety limit"}
-                _store_nokia_get(cache_key, result, b"")
+                if method == "GET":
+                    _store_nokia_get(cache_key, result, b"")
                 return result, b""
             result = {"enabled": True, "configured": True, "reachable": True, "authenticated": True,
                       "status": response.status, "content_type": content_type,
                       "latency_ms": round((time.monotonic() - started) * 1000),
                       "detail": "Configured Nokia endpoint responded successfully"}
-            _store_nokia_get(cache_key, result, body)
+            if method == "GET":
+                _store_nokia_get(cache_key, result, body)
             return result, body
     except urllib.error.HTTPError as exc:
         result = {"enabled": True, "configured": True, "reachable": True,
@@ -631,13 +644,15 @@ def _nokia_api_request(path, method="GET", json_body=None):
                   "latency_ms": round((time.monotonic() - started) * 1000),
                   "detail": "Nokia endpoint rejected the configured credentials" if exc.code in {401, 403}
                   else f"Nokia endpoint returned HTTP {exc.code}"}
-        _store_nokia_get(cache_key, result, b"")
+        if method == "GET":
+            _store_nokia_get(cache_key, result, b"")
         return result, b""
     except (urllib.error.URLError, OSError, ssl.SSLError) as exc:
         result = {"enabled": True, "configured": True, "reachable": False, "authenticated": False,
                   "status": None, "content_type": None, "latency_ms": None,
                   "detail": f"Nokia endpoint unavailable: {str(exc.reason if isinstance(exc, urllib.error.URLError) else exc)[:180]}"}
-        _store_nokia_get(cache_key, result, b"")
+        if method == "GET":
+            _store_nokia_get(cache_key, result, b"")
         return result, b""
 
 
@@ -1187,9 +1202,10 @@ def connection_incidents(hours=168, limit=40):
 def network_visibility(status=None, prefer_cache=False):
     global _NETWORK_VISIBILITY_CACHE
     cfg = settings()
-    if prefer_cache:
-        max_age = min(max(int(cfg.get("monitor_interval_seconds", 60)), 30), 900) + 5
-        with _NETWORK_VISIBILITY_LOCK:
+    with _NETWORK_VISIBILITY_LOCK:
+        cache_generation = _NETWORK_VISIBILITY_GENERATION
+        if prefer_cache:
+            max_age = min(max(int(cfg.get("monitor_interval_seconds", 60)), 30), 900) + 5
             cached = _NETWORK_VISIBILITY_CACHE
             if cached and time.monotonic() - cached[0] <= max_age:
                 return copy.deepcopy(cached[1])
@@ -1268,7 +1284,8 @@ def network_visibility(status=None, prefer_cache=False):
                             "unassigned": counts["unassigned"] or 0},
               "home_assistant_ready": bool(os.getenv("SUPERVISOR_TOKEN"))}
     with _NETWORK_VISIBILITY_LOCK:
-        _NETWORK_VISIBILITY_CACHE = (time.monotonic(), copy.deepcopy(result))
+        if cache_generation == _NETWORK_VISIBILITY_GENERATION:
+            _NETWORK_VISIBILITY_CACHE = (time.monotonic(), copy.deepcopy(result))
     return result
 
 
@@ -1587,6 +1604,7 @@ printf 'forwarding=%s\ninterface=%s\nroute=%s\nnat=%s\noutbound=%s\nreturn=%s\ns
                      (sampled_at,nat_packets,nat_bytes,outbound_packets,outbound_bytes,return_packets,return_bytes)
                      VALUES(?,?,?,?,?,?,?)""", (result["checked_at"], counters["nat"], byte_counters["nat"],
                      counters["outbound"], byte_counters["outbound"], counters["return"], byte_counters["return"]))
+    invalidate_network_visibility()
     return result
 
 

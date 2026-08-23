@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.9
+
+- Invalidates cached network visibility after routing, subscriber, and alert state changes so post-operation refreshes immediately show current database state.
+- Restricts the short-lived Nokia response cache to GET requests so a radio-control POST acknowledgement can never be reused as live status or configuration readback.
+
 ## 0.6.8
 
 - Moved availability monitoring into the single Gunicorn worker as one supervised background thread, removing a duplicate Python process and its imported Flask/MongoDB runtime.

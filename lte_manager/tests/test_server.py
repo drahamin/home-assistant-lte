@@ -853,6 +853,48 @@ class AppTests(unittest.TestCase):
             self.server.settings = original
             self.server._NOKIA_GET_CACHE.clear()
 
+    def test_nokia_post_response_is_never_reused_for_get(self):
+        original = self.server.settings
+        cfg = {"nokia_api_enabled": True, "nokia_api_base_url": "https://192.0.2.100",
+               "bts_host": "192.0.2.100", "nokia_api_username": "", "nokia_api_password": "",
+               "nokia_api_tls_verify": False}
+        acknowledgement = MagicMock()
+        acknowledgement.status = 202
+        acknowledgement.headers.get_content_type.return_value = "application/json"
+        acknowledgement.read.return_value = b'{"accepted":true}'
+        acknowledgement.__enter__.return_value = acknowledgement
+        status = MagicMock()
+        status.status = 200
+        status.headers.get_content_type.return_value = "application/json"
+        status.read.return_value = b'{"cell":"on-air"}'
+        status.__enter__.return_value = status
+        try:
+            self.server.settings = lambda: cfg
+            self.server._NOKIA_GET_CACHE.clear()
+            with patch.object(self.server.urllib.request, "urlopen",
+                              side_effect=[acknowledgement, status]) as urlopen:
+                posted = self.server._nokia_api_request("/control", method="POST", json_body={"action": "sync"})
+                fetched = self.server._nokia_api_request("/control")
+            self.assertEqual(posted[1], b'{"accepted":true}')
+            self.assertEqual(fetched[1], b'{"cell":"on-air"}')
+            self.assertEqual(urlopen.call_count, 2)
+        finally:
+            self.server.settings = original
+            self.server._NOKIA_GET_CACHE.clear()
+
+    def test_visibility_cache_is_invalidated_by_mutating_events(self):
+        for kind in ("subscriber", "routing", "alert"):
+            self.server._NETWORK_VISIBILITY_CACHE = (
+                self.server.time.monotonic(), {"inventory": {"total": 1}})
+            self.server.event(kind, "State changed")
+            self.assertIsNone(self.server._NETWORK_VISIBILITY_CACHE)
+
+        cached = (self.server.time.monotonic(), {"inventory": {"total": 1}})
+        self.server._NETWORK_VISIBILITY_CACHE = cached
+        self.server.event("tool", "Read-only check")
+        self.assertIs(self.server._NETWORK_VISIBILITY_CACHE, cached)
+        self.server._NETWORK_VISIBILITY_CACHE = None
+
     def test_generated_private_downloads_do_not_accumulate(self):
         before_support = set(Path(self.temp.name).glob("lte-support-*.zip"))
         with patch.object(self.server, "diagnostic_checks", return_value=[]):
