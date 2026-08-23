@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0
+
+- Invalidates cached inventory visibility immediately after successful SIM programming or recovery provisions a subscriber.
+- Keeps read-only SIM operations from unnecessarily discarding the visibility cache.
+
 ## 0.6.9
 
 - Invalidates cached network visibility after routing, subscriber, and alert state changes so post-operation refreshes immediately show current database state.

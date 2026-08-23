@@ -2773,6 +2773,7 @@ def sim_card_recover():
                          (sub["imsi"], sub["name"], sub["k"], sub["opc"], sub["amf"], sub["apn"], sub["msisdn"],
                           sub["zone"], sub["device_type"], int(sub["critical"]), sub["notes"], int(time.time())))
             conn.execute("DELETE FROM sim_write_profiles WHERE imsi=?", (imsi,))
+        invalidate_network_visibility()
         update_sim_inventory(sub, "hss_provisioned", identity["iccid"])
         set_sim_progress("complete", 100, "Verified SIM recovered into the EPC/HSS", "complete", imsi)
         event("sim", f"Recovered verified USIM {identity['iccid'][-6:]} for UE {imsi}; {provisioned}")
@@ -2869,6 +2870,7 @@ def sim_card_program():
                          (sub["imsi"], sub["name"], sub["k"], sub["opc"], sub["amf"], sub["apn"], sub["msisdn"],
                           sub["zone"], sub["device_type"], int(sub["critical"]), sub["notes"], int(time.time())))
             conn.execute("DELETE FROM sim_write_profiles WHERE imsi=?", (sub["imsi"],))
+        invalidate_network_visibility()
         update_sim_inventory(sub, "hss_provisioned", iccid)
         set_sim_progress("complete", 100, "SIM verified and EPC/HSS subscriber provisioned", "complete", sub["imsi"])
         event("sim", f"Programmed and read back owned USIM {iccid[-6:]} for UE {sub['imsi']}; {provisioned}")

@@ -549,6 +549,8 @@ class AppTests(unittest.TestCase):
         original = self.server.settings
         try:
             self.server.settings = lambda: cfg
+            self.server._NETWORK_VISIBILITY_CACHE = (
+                self.server.time.monotonic(), {"inventory": {"total": 0}})
             completed = subprocess.CompletedProcess(["pySim-prog.py"], 0, "done", "")
             with patch.object(self.server.shutil, "which", side_effect=lambda name: "/usr/bin/pySim-prog.py" if "prog" in name else None), \
                  patch.object(self.server, "sim_reader_status", return_value={"selected_reader": "USB", "selected_index": 0,
@@ -569,6 +571,7 @@ class AppTests(unittest.TestCase):
             self.assertEqual(args[args.index("--pin-adm") + 1], "12345678")
             self.assertEqual(args[args.index("--type") + 1], "gialersim")
             self.assertNotIn(body["k"], str(data))
+            self.assertIsNone(self.server._NETWORK_VISIBILITY_CACHE)
         finally:
             with self.server.db() as conn:
                 conn.execute("DELETE FROM subscribers WHERE imsi=?", (body["imsi"],))
@@ -629,10 +632,13 @@ class AppTests(unittest.TestCase):
             with self.server.db() as conn:
                 pending = conn.execute("SELECT stage FROM sim_write_profiles WHERE imsi=?", (imsi,)).fetchone()
             self.assertEqual(pending["stage"], "card_verified")
+            self.server._NETWORK_VISIBILITY_CACHE = (
+                self.server.time.monotonic(), {"inventory": {"total": 0}})
             with patch.object(self.server, "read_sim_card", return_value={"imsi": imsi, "iccid": iccid}), \
                  patch.object(self.server, "provision_mongo", return_value="Provisioned to EPC"):
                 recovered = self.client.post("/api/sim/card/recover", json={"imsi": imsi, "confirm": f"RECOVER {imsi}"})
             self.assertEqual(recovered.status_code, 200)
+            self.assertIsNone(self.server._NETWORK_VISIBILITY_CACHE)
             with self.server.db() as conn:
                 self.assertIsNotNone(conn.execute("SELECT imsi FROM subscribers WHERE imsi=?", (imsi,)).fetchone())
                 self.assertIsNone(conn.execute("SELECT imsi FROM sim_write_profiles WHERE imsi=?", (imsi,)).fetchone())
