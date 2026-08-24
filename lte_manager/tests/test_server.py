@@ -194,6 +194,17 @@ class AppTests(unittest.TestCase):
         self.assertIn('id="sim-card-process"', page)
         self.assertIn("Complete PLMN and USIM policy", page)
 
+    def test_mobile_interface_has_ios_safe_constraints(self):
+        page = self.client.get("/").get_data(as_text=True)
+        response = self.client.get("/static/suite.css")
+        css = response.get_data(as_text=True)
+        response.close()
+        self.assertIn("viewport-fit=cover", page)
+        self.assertIn("env(safe-area-inset-bottom)", css)
+        self.assertIn("grid-template-columns: repeat(5,minmax(0,1fr))", css)
+        self.assertIn("font-size: 16px", css)
+        self.assertIn("overflow-x: clip", css)
+
     def test_commissioning_context_identifies_supported_nokia_access(self):
         path = Path(self.temp.name) / "commissioning-access-test.xml"
         path.write_text("""<raml><managedObject>

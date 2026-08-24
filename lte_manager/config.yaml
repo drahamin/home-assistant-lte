@@ -1,5 +1,5 @@
 name: Baiamonte LTE
-version: 1.0
+version: 1.0.1
 slug: lte_lab_manager
 description: Operate Baiamonte's production LTE data network for estate cameras, IoT devices, programmable SIMs, EPC, and Nokia radio.
 startup: application

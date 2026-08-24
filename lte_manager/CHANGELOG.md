@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.1
+
+- Consolidated the responsive navigation into an iOS-style bottom tab bar with Apple safe-area padding and full-width constraints.
+- Removed document-level horizontal overflow from compact chart controls and constrained tables, dialogs, logs, and long operational values to their containers.
+- Added 44 px mobile touch targets, iOS-safe 16 px form controls, viewport-cover support, and tighter phone typography and spacing.
+
 ## 1.0
 
 - Invalidates cached inventory visibility immediately after successful SIM programming or recovery provisions a subscriber.
